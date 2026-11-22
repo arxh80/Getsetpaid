@@ -13,12 +13,14 @@ export interface CheckoutInput {
   account: string; invoiceId: string; number: string; grossMinor: number; feeMinor: number;
   successUrl: string; cancelUrl: string;
 }
+export interface CheckoutSessionState { status: "open" | "complete" | "expired"; url: string | null }
 export interface StripeGateway {
   authorizeUrl(state: string, redirectUri: string): string;
   exchangeCode(code: string): Promise<{ account: string }>;
   chargesEnabled(account: string): Promise<boolean>;
   deauthorize(account: string): Promise<void>;
   createCheckoutSession(input: CheckoutInput): Promise<{ id: string; url: string }>;
+  checkoutSession(account: string, id: string): Promise<CheckoutSessionState>;
   constructEvent(rawBody: string, signature: string): StripeEvent;   // throws on a bad signature
 }
 
@@ -58,6 +60,11 @@ class LiveStripeGateway implements StripeGateway {
     );
     if (!session.url) throw new Error("stripe checkout: no url");
     return { id: session.id, url: session.url };
+  }
+  async checkoutSession(account: string, id: string): Promise<CheckoutSessionState> {
+    const session = await this.stripe.checkout.sessions.retrieve(id, {}, { stripeAccount: account });
+    const status = session.status === "open" ? "open" : session.status === "complete" ? "complete" : "expired";
+    return { status, url: session.url };
   }
   constructEvent(rawBody: string, signature: string) {
     return this.stripe.webhooks.constructEvent(rawBody, signature, this.env.webhookSecret);

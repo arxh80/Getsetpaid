@@ -22,6 +22,7 @@ export type PayView =
 export type StartOutcome =
   | { kind: "redirect"; url: string }
   | { kind: "refused"; sellerName: string | null }
+  | { kind: "already_paid" }
   | { kind: "unavailable" };
 
 const NOTHING = { kind: "refused", sellerName: null } as const;
@@ -58,6 +59,19 @@ export async function startCardPayment(token: string, origin: string): Promise<S
   }
   const row = data?.[0];
   if (!row) return { kind: "unavailable" };
+
+  // One payable session at a time: a second click or tab goes back to the
+  // open one, so the payer cannot pay twice. A session Stripe cannot find (an
+  // account relinked since) is logged and a new one is made.
+  if (row.previous_stripe_session_id) {
+    try {
+      const previous = await gateway.checkoutSession(row.account, row.previous_stripe_session_id);
+      if (previous.status === "complete") return { kind: "already_paid" };
+      if (previous.status === "open" && previous.url) return { kind: "redirect", url: previous.url };
+    } catch (e) {
+      console.error("[pay] the earlier Checkout Session could not be read:", e instanceof Error ? e.message : "unknown");
+    }
+  }
 
   let session: { id: string; url: string };
   try {

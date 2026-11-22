@@ -3,7 +3,7 @@
 // gateway types come from client.ts as a type-only import, erased at build.
 import Stripe from "stripe";
 import type { StripeEnv } from "@/lib/stripe/env";
-import type { CheckoutInput, StripeGateway } from "@/lib/stripe/client";
+import type { CheckoutInput, CheckoutSessionState, StripeGateway } from "@/lib/stripe/client";
 
 const FAKE_CODE = /^fake_code_([A-Za-z0-9_-]{8})$/;
 
@@ -30,6 +30,11 @@ export class FakeStripeGateway implements StripeGateway {
   async createCheckoutSession(i: CheckoutInput) {
     const id = `cs_fake_${i.invoiceId.replaceAll("-", "")}`;
     return { id, url: `https://checkout.stripe.test/c/pay/${id}` };
+  }
+  async checkoutSession(account: string, id: string): Promise<CheckoutSessionState> {
+    void account;
+    void id; // the fake keeps no sessions: an earlier one reads as expired, so each click mints a new one
+    return { status: "expired", url: null };
   }
   constructEvent(rawBody: string, signature: string) {
     return this.stripe.webhooks.constructEvent(rawBody, signature, this.env.webhookSecret);
