@@ -262,6 +262,21 @@ describe("account events and the rest", () => {
     expect(rows[0].charges_enabled).toBe(false);
   });
 
+  it("account.updated delivered out of order: an older event never overwrites a newer one", async () => {
+    const flag = async () =>
+      (await pool.query<{ charges_enabled: boolean }>(
+        `select charges_enabled from public.invoice_stripe_accounts where stripe_account_id = $1`, [acctB])).rows[0].charges_enabled;
+    // The flag is false from the previous test, at created 1_790_000_000.
+    expect(await handleStripeEvent(evt("account.updated", acctB, { charges_enabled: true }, { created: 1_789_999_000 })))
+      .toEqual({ status: 200, outcome: "duplicate" });
+    expect(await flag(), "an older event turned charges back on").toBe(false);
+    // CONTROL: a newer (here: equal, the default) event is applied. Not later than the default:
+    // the row is re-linked below, and a stored later time would make the next tests' events "older".
+    expect(await handleStripeEvent(evt("account.updated", acctB, { charges_enabled: true })))
+      .toEqual({ status: 200, outcome: "applied" });
+    expect(await flag()).toBe(true);
+  });
+
   it("account.application.deauthorized ends the link", async () => {
     expect(await handleStripeEvent(evt("account.application.deauthorized", acctB, {})))
       .toEqual({ status: 200, outcome: "applied" });

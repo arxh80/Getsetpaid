@@ -899,6 +899,20 @@ describe("C8: ordinary exports: one archive when they fit, parts when they do no
     );
   }, 300_000);
 
+  // A ROW ceiling is a ceiling too: it used to throw a plain Error, so a
+  // workspace with 50,001 rows in one table failed every export instead of
+  // being split (audit 2026-11-18, finding 1).
+  it("an ordinary export over a ROW ceiling is built in parts, not failed", async () => {
+    const ws = await seedClosableWorkspace("c8r");
+    const job = await startExport(ws.ownerId, "workspace", ws.orgId);
+    const row = await buildUntilDone(job, { max_rows_per_table: 3, max_total_rows: 7 }, 1);
+    expect(row.status, `${row.failure_reason}`).toBe("succeeded");
+    expect(row.part_count).toBeGreaterThanOrEqual(2);
+    expect(row.resume_cursor).toBeNull();
+    const parts = await partRows(job);
+    expect(parts.map((p) => p.part_no)).toEqual(Array.from({ length: row.part_count }, (_, i) => i + 1));
+  }, 300_000);
+
   it("an account export carried past a ceiling by its screenshots is built in parts too (Q263)", async () => {
     const ws = await seedClosableWorkspace("c8c");
     const shots = new Map<string, Buffer>();

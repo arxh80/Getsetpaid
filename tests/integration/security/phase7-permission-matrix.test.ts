@@ -1193,11 +1193,28 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "reachable by whoever may read the invoice (view_finance, not tier-gated). It " +
     "refuses a draft and anything outside the caller's workspace, writes an " +
     "identifier-only audit row, and returns no data. Asserted in rls_invoices.sql § IY.",
+  audit_received_invoice_download:
+    "Invoices part 3 Task 3 -- the received PDF route calls it before rendering; " +
+    "view_finance in the receiving workspace, any tier; refuses a withdrawn delivery " +
+    "and everything outside it. Asserted in rls_invoice_deliveries.sql § DP.",
   record_invoice_send:
     "Invoices part 1 Task 11 -- sendInvoiceAction records an email Brevo accepted: " +
     "issued or paid only, manage_finance + Pro; audits invoice.sent with the number " +
     "only. The budget (invoice_send, 30/h/user) is spent in the action before the " +
     "send. Asserted in rls_invoices.sql § IW.",
+  deliver_invoice:
+    "Invoices part 3 Task 2 -- delivers an issued or paid invoice into a connected " +
+    "workspace: manage_finance, then private.invoice_delivery_target (Pro, a live " +
+    "manual link, a live published foreign profile, an accepted connection). Every " +
+    "refusal is one error. Budget 30/h/user at the insert. Asserted in " +
+    "rls_invoice_deliveries.sql § DD/§ DL.",
+  withdraw_invoice_delivery:
+    "Invoices part 3 Task 2 -- the sender pulls back a live delivery; manage_finance, " +
+    "no tier gate. Asserted in rls_invoice_deliveries.sql § DW.",
+  invoice_delivery_state:
+    "Invoices part 3 Task 2 -- the sender's invoice page: live deliveries and the " +
+    "profiles it may deliver to now, display names only; empty without view_finance. " +
+    "Asserted in rls_invoice_deliveries.sql § DS.",
   mint_step_up_token:
     "Phase 10 Task 6 (G13) -- the app's server records a passed step-up for " +
     "the CALLER, for one purpose, right after checkStepUp(); every gated RPC " +
@@ -1276,6 +1293,8 @@ const PRE_PHASE7_RELATIONS = [
   // (invoice_pay_sessions, stripe_events, stripe_platform_settings) grant
   // authenticated NOTHING, so this census does not see them (ST3).
   "invoice_card_payments",
+  // Invoices part 3: the sender reads it; proved in rls_invoice_deliveries.sql § DR/§ DB.
+  "invoice_deliveries",
   "invoice_lines",
   "invoice_sends",
   "invoice_settings",
@@ -1286,6 +1305,8 @@ const PRE_PHASE7_RELATIONS = [
   "merge_candidates",
   "merges",
   "network_connected_profiles",
+  // Invoices part 3: the receiver's definer view; rls_invoice_deliveries.sql § DV.
+  "received_invoices",
   "network_connection_requests",
   "network_directory",
   "network_links",
@@ -1437,10 +1458,12 @@ const SERVER_ONLY_RPCS: Record<string, string> = {
     "Task 9b job 2 -- the export-ready notice queue; returns no archive key and no URL",
   "pending_invoice_stripe_account_notifications(p_limit integer)":
     "Invoices part 2 Task 3 -- the delivery tick reads Stripe link/end audit rows not yet emailed, with the workspace's current Owner/Admin addresses; no account id; refuses any session",
+  "pending_invoice_delivery_notifications(p_limit integer)":
+    "Invoices part 3 Task 4 -- the delivery tick reads invoice.delivered rows and the RECEIVING workspace's view_finance addresses; refuses any session. Asserted in rls_invoice_deliveries.sql § DN",
   "stripe_account_deauthorized(p_event_id text, p_account text)":
     "Invoices part 2 Task 3 (event id: Task 4) -- the webhook ends the live link of an account Stripe says revoked GetSetPaid, once per event id, and audits it with the tombstone as actor; refuses any session. Asserted in rls_invoices_stripe.sql § SL and § SW",
-  "stripe_account_updated(p_event_id text, p_account text, p_charges_enabled boolean)":
-    "Invoices part 2 Task 3 (event id: Task 4) -- the webhook mirrors Stripe's charges_enabled onto the live link of an account, once per event id; refuses any session. Asserted in rls_invoices_stripe.sql § SL and § SW",
+  "stripe_account_updated(p_event_id text, p_account text, p_charges_enabled boolean, p_event_created timestamp with time zone)":
+    "Invoices part 2 Task 3 (event id: Task 4; event time: audit 2026-11-18) -- the webhook mirrors Stripe's charges_enabled onto the live link of an account, once per event id, never from an event older than the newest applied; refuses any session. Asserted in rls_invoices_stripe.sql § SL and § SW",
   "invoice_pay_page(p_invoice_id uuid)":
     "Invoices part 2 Task 4 -- what the public pay page may say about an invoice id: payable false for every refusal, the seller's name only for a known non-draft invoice, number and gross only when payable. Asserted in rls_invoices_stripe.sql § SY",
   "begin_invoice_card_payment(p_invoice_id uuid)":

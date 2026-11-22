@@ -28,7 +28,11 @@ vi.mock("@/lib/supabase/service", () => ({
   }),
 }));
 
-import { deliverInvoiceBankChangeNotifications, deliverInvoiceStripeAccountNotifications } from "@/lib/email/invoice-notifications";
+import {
+  deliverInvoiceBankChangeNotifications,
+  deliverInvoiceDeliveredNotifications,
+  deliverInvoiceStripeAccountNotifications,
+} from "@/lib/email/invoice-notifications";
 
 const row = (id: string, emails: string[] | null) => ({
   audit_event_id: id,
@@ -120,5 +124,48 @@ describe("deliverInvoiceStripeAccountNotifications", () => {
   });
   it("nothing pending is nothing_pending", async () => {
     await expect(deliverInvoiceStripeAccountNotifications()).resolves.toEqual({ outcome: "nothing_pending" });
+  });
+});
+
+const deliveredRow = (id: string, emails: string[] | null, sender: string | null = "Alpha Promotions Ltd") => ({
+  audit_event_id: id,
+  emails,
+  organisation_slug: "neon-nights",
+  organisation_name: "Neon Nights Ltd",
+  sender_name: sender,
+  delivered_at: "2026-11-17T12:00:00.000Z",
+});
+
+describe("deliverInvoiceDeliveredNotifications", () => {
+  it("reads the resolver, sends one email per row to the receiver's finance holders, THEN stamps it under invoice_delivered", async () => {
+    db.rows = [deliveredRow("a1", ["fin@r.example", "owner@r.example"])];
+    send.fn.mockResolvedValue({ ok: true, messageId: "m-1" });
+    await expect(deliverInvoiceDeliveredNotifications()).resolves.toEqual({ outcome: "delivered", sent: 1, failed: 0, deferred: 0 });
+    expect(events.log).toEqual([
+      "rpc:pending_invoice_delivery_notifications",
+      "send:fin@r.example+owner@r.example",
+      "stamp:invoice_delivered:a1",
+    ]);
+    expect(send.fn.mock.calls[0][0].subject).toBe("[GetSetPaid] New invoice from Alpha Promotions Ltd");
+  });
+  it("a snapshot with no seller name still sends, with the neutral sender", async () => {
+    db.rows = [deliveredRow("a2", ["fin@r.example"], null)];
+    send.fn.mockResolvedValue({ ok: true, messageId: "m" });
+    await deliverInvoiceDeliveredNotifications();
+    expect(send.fn.mock.calls[0][0].subject).toBe("[GetSetPaid] New invoice from A connected workspace");
+  });
+  it("a failed send stamps nothing", async () => {
+    db.rows = [deliveredRow("a1", ["fin@r.example"])];
+    send.fn.mockResolvedValue({ ok: false, error: "Brevo 503" });
+    await deliverInvoiceDeliveredNotifications();
+    expect(events.log.some((l) => l.startsWith("stamp:"))).toBe(false);
+  });
+  it("nobody to send to is recorded once as undeliverable", async () => {
+    db.rows = [deliveredRow("a1", null)];
+    await deliverInvoiceDeliveredNotifications();
+    expect(events.log).toContain("refuse:invoice_delivered:a1:no_recipient");
+  });
+  it("nothing pending is nothing_pending", async () => {
+    await expect(deliverInvoiceDeliveredNotifications()).resolves.toEqual({ outcome: "nothing_pending" });
   });
 });
