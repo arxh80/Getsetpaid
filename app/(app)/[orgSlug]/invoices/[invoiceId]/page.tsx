@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getCurrentOrg } from "@/lib/auth";
+import { getCurrentOrg, hasPermission } from "@/lib/auth";
+import { loadDeliveryState } from "@/lib/invoices/delivery";
+import { InvoiceDeliveryPanel } from "@/components/invoices/invoice-delivery-panel";
+import { ActionOutcome } from "@/components/ui/action-outcome";
 import { getFinanceReadAccess, getFinanceWriteAccess } from "@/lib/crm/finance-access";
 import { loadLinkOptions } from "@/lib/crm/queries";
 import { loadInvoice, loadInvoiceSends, loadInvoiceSettings, type InvoiceDetail } from "@/lib/invoices/queries";
@@ -96,7 +99,11 @@ export default async function InvoicePage({ params }: PageProps<"/[orgSlug]/invo
 
   const snapshot = parseSnapshot(invoice.snapshot);
   // The non-draft branch only: a draft has never been sent.
-  const sends = await loadInvoiceSends(org.id, invoice.id);
+  const [sends, delivery, canManageFinance] = await Promise.all([
+    loadInvoiceSends(org.id, invoice.id),
+    loadDeliveryState(invoice.id),
+    hasPermission(org.id, "manage_finance"),
+  ]);
   const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London" }).format(new Date());
   return (
     <div className="flex flex-col gap-6">
@@ -141,6 +148,16 @@ export default async function InvoicePage({ params }: PageProps<"/[orgSlug]/invo
             ) : null}
           </div>
         ) : null}
+        {/* Always mounted, void included: withdrawing the last delivery of a void invoice revalidates the panel to null, and the outcome must outlive it. */}
+        <ActionOutcome testId="delivery-outcome">
+          <InvoiceDeliveryPanel
+            orgSlug={org.slug}
+            invoiceId={invoice.id}
+            rows={delivery}
+            canDeliver={access.canWrite && invoice.status !== "void"}
+            canWithdraw={canManageFinance && !org.isSuspended}
+          />
+        </ActionOutcome>
         {invoice.status === "issued" ? (
           <div className="flex max-w-prose flex-col gap-3">
             <h3 className="text-lg font-bold text-ink">Record the payment</h3>
