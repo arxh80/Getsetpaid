@@ -14,6 +14,7 @@ import type { InvoiceSnapshot } from "@/lib/invoices/snapshot";
 export const INVOICE_NOTICE_ALLOWLIST = {
   bankDetailsChanged: ["organisationSlug", "organisationName", "accountLast4", "changedAt", "siteUrl"],
   stripeAccountChanged: ["organisationSlug", "organisationName", "change", "changedAt", "siteUrl"],
+  invoiceDelivered: ["organisationSlug", "organisationName", "senderName", "deliveredAt", "siteUrl"],
 } as const;
 
 export interface BankDetailsChangedInput {
@@ -82,6 +83,35 @@ export function buildStripeAccountChangedNotice(input: StripeAccountChangedInput
     "Open invoice settings",
   );
   assertOnlyLink("stripeAccountChanged", body, link);
+  return body;
+}
+
+export interface InvoiceDeliveredInput {
+  readonly organisationSlug: string;
+  readonly organisationName: string;
+  readonly senderName: string;
+  readonly deliveredAt: string;
+  readonly siteUrl: string;
+}
+
+/** Invoices part 3: an invoice arrived in the receiving workspace. The sender's name only: no amount, number or line. */
+export function buildInvoiceDeliveredNotice(input: InvoiceDeliveredInput): EmailBody {
+  assertInputAllowlisted("invoiceDelivered", INVOICE_NOTICE_ALLOWLIST.invoiceDelivered, input);
+  const slug = slugOrRefuse("invoiceDelivered", input.organisationSlug);
+  const sender = oneLine(input.senderName, 120) || "A connected workspace";
+  const name = oneLine(input.organisationName, 120);
+  const label = name ? `“${name}” (${slug})` : slug;
+  const link = `${origin(input.siteUrl)}/${slug}/invoices/received`;
+  const body = render(
+    `[GetSetPaid] New invoice from ${sender}`,
+    [
+      `${sender} sent an invoice to the workspace ${label} on ${ukDateTime(input.deliveredAt)}.`,
+      "Open your received invoices to read it, download the PDF, or pay it.",
+    ],
+    link,
+    "Open received invoices",
+  );
+  assertOnlyLink("invoiceDelivered", body, link);
   return body;
 }
 

@@ -36,6 +36,8 @@ Beside Phase 10, **Invoices part 1** (Q276): draft, issue under a gap-free per-w
 
 **Invoices part 2** (Q279): link a Stripe Standard account behind step-up; a signed `/pay/<id>.<sig>` link on the PDF and email starts a Checkout direct charge with a 1% application fee; the signed webhook marks the invoice paid by card through part 1's booking path. Detail in `docs/as-built.md`.
 
+**Invoices part 3** (Q282): a Pro sender delivers an issued or paid invoice into a connected workspace through its manual company link; the receiver's `view_finance` holders, on any tier, read it in a read-only inbox (`/[orgSlug]/invoices/received`) through the definer view `received_invoices`, and get one email. Detail in `docs/as-built.md`.
+
 Per-phase detail is in `docs/as-built.md` § Current state and the "as it actually shipped" sections.
 
 ## Gates
@@ -86,7 +88,7 @@ Skills are pinned project-level. Restore them with `npx skills experimental_inst
 
 - Network identities (`network_profiles`, `network_links`) and tenant-private records live in **separate tables**.
 - Discovery reads only explicitly published fields. Publishing is opt-in per field.
-- **The two views are the only foreign read path.** The base `network_profiles` table answers only its own organisation's members (its cross-tenant row policy was dropped in Phase 10 Task 19, because a row policy cannot hide columns). A foreign profile reaches a caller only through the **definer** views `network_directory` and `network_connected_profiles`, whose WHERE clauses call `private.network_profile_reaches_caller` and whose dependencies are pinned from `pg_depend`. Never join a private table into them.
+- **The two views are the only foreign read path.** The base `network_profiles` table answers only its own organisation's members (its cross-tenant row policy was dropped in Phase 10 Task 19, because a row policy cannot hide columns). A foreign profile reaches a caller only through the **definer** views `network_directory` and `network_connected_profiles`, whose WHERE clauses call `private.network_profile_reaches_caller` and whose dependencies are pinned from `pg_depend`. Never join a private table into them. `received_invoices` is the third definer view and the only path by which one workspace reads another's invoice; its columns and `pg_depend` set are pinned in `rls_invoice_deliveries.sql` § DV.
 - **Request-to-connect.** An accepted request unlocks only the other side's `connections`-level *published fields*, organisation-wide (Q80). It never unlocks notes, ratings, financials, documents, events or activity.
 - Linking a private record to a network profile is **manual only**: an empty search box, no suggestions. The link is private to the linking organisation.
 - **Ratings are permanently private in v1.** No aggregate, ever, without a deliberate future decision.
@@ -225,7 +227,7 @@ Skills: `supabase`, `supabase-postgres-best-practices`, `supabase-audit-rls` (de
 - First-class suppliers (they are a Contact/Company tag)
 - Verification badges; Microsoft SSO; an Enterprise tier
 
-Finance is budget & actuals per event and, since the founder's 2026-10-20 scope change (Q276), **invoices**: part 1 shipped (bank transfer); part 2 Stripe Connect shipped; part 3 network delivery follows. Still no full P&L and no accounting-software features.
+Finance is budget & actuals per event and, since the founder's 2026-10-20 scope change (Q276), **invoices**: part 1 shipped (bank transfer); part 2 Stripe Connect shipped; part 3 network delivery shipped. Still no full P&L and no accounting-software features.
 
 ## Decisions log
 

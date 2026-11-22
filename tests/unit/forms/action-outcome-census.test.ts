@@ -55,6 +55,8 @@ const REPORTED_SURFACES = [
   // Invoices part 2 Task 3. Disconnecting Stripe revalidates the settings page
   // into the "ended" view, which no longer contains the Disconnect form.
   "components/invoices/stripe-connection-panel.tsx",
+  // Invoices part 3 Task 5. Delivering or withdrawing revalidates the invoice page into a tree without the pressed form.
+  "components/invoices/invoice-delivery-panel.tsx",
 ];
 
 /**
