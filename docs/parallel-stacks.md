@@ -33,7 +33,7 @@ mid-run. The "flaky container" was always this.
 
 ### What the Supabase CLI actually supports
 
-Measured against **2.116.0** on 2026-09-21 by probing, not by reading blog
+Measured against **2.116.0** on 2026-09-21 (CI and local moved to 3.2.0 on 2026-11-22; the probes were not re-run) by probing, not by reading blog
 posts. The answers decided the design, so they are written down:
 
 | Probe | Result |
