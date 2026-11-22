@@ -76,6 +76,11 @@ Skills are pinned project-level. Restore them with `npx skills experimental_inst
 - Work on a branch and open a PR for non-trivial changes. Never commit feature work straight to `main`.
 - Never commit secrets, `.env` files, service-role keys or private-bucket contents.
 
+## Working mode (founder, 2026-11-22)
+
+- **Do not stop between tasks.** Keep checking CI, merge each PR once every gate except Supabase Preview is green, then start the next task straight away.
+- **No permission needed** for anything except changes to the spec (`getsetpaid_crm_prd.docx` and founder rulings in the decisions queue). Ask about those; do everything else.
+
 ## Architecture
 
 **Backend:** Supabase. Postgres is the system of record; Supabase Auth handles identity; Storage holds files in private buckets only; RLS controls row access. **Frontend:** Next.js App Router, desktop-first, no native mobile at MVP.
