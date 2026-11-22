@@ -4468,6 +4468,12 @@ p2_rows_min "G2 (b) CONTROL: the same session WITH the mark reads it" 1 \
 # G2 (a)'s: the same session with the right value reads the view.
 mark_check "G2 (c) WRONG mark GET network_directory -> 403, no rows" "403 -1" \
            "network_directory?select=id" "$UNCON" "wrong"
+# G2 (d): the third definer view, received_invoices, is refused the same way
+# (20261120003000). Before it, an unmarked GET answered an empty 200.
+mark_check "G2 (d) UNMARKED GET received_invoices -> 403, no rows" "403 -1" \
+           "received_invoices?select=id" "$UNCON"
+p2_code "G2 (d) CONTROL: the same session WITH the mark gets 200" 200 GET \
+        "received_invoices?select=id" "" "$UNCON"
 
 # G14: an impersonating superuser's direct reads see nothing; the app's
 # audited path (getCurrentOrg's page_viewed) is the only way in. A live,
