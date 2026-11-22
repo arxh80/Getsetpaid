@@ -1133,7 +1133,7 @@ select leak.val('IN9 neither masking view depends on an integration table, and n
                and relname in ('integration_connections','integration_sync_runs'))::text$$,
   '0/0/2');
 
--- IN10 (Invoices part 1, widened by part 2 Task 2). The invoice tables and the
+-- IN10 (Invoices part 1, widened by part 2 Task 2 and part 3 Task 1). The invoice tables and the
 -- five Stripe tables are tenant-private finance; the same two depths as IN9,
 -- by name, plus the denominator.
 select leak.val('IN10 neither masking view depends on an invoice table, and no function in their closure names one',
@@ -1146,15 +1146,15 @@ select leak.val('IN10 neither masking view depends on an invoice table, and no f
              where v.relname in ('network_directory','network_connected_profiles')
                and t.relname in ('invoice_settings','invoices','invoice_lines','invoice_sends',
                             'invoice_stripe_accounts','invoice_card_payments','invoice_pay_sessions',
-                            'stripe_events','stripe_platform_settings'))::text || '/' ||
+                            'invoice_deliveries','stripe_events','stripe_platform_settings'))::text || '/' ||
            (select count(*) from leak.fn_closure f
-             where f.body ~ '\mpublic\.(invoice(s|_lines|_sends|_settings|_stripe_accounts|_card_payments|_pay_sessions)|stripe_events|stripe_platform_settings)\M')::text || '/' ||
+             where f.body ~ '\mpublic\.(invoice(s|_lines|_sends|_settings|_stripe_accounts|_card_payments|_pay_sessions|_deliveries)|stripe_events|stripe_platform_settings)\M')::text || '/' ||
            (select count(*) from pg_catalog.pg_class
              where relnamespace = 'public'::regnamespace
                and relname in ('invoice_settings','invoices','invoice_lines','invoice_sends',
                             'invoice_stripe_accounts','invoice_card_payments','invoice_pay_sessions',
-                            'stripe_events','stripe_platform_settings'))::text$$,
-  '0/0/9');
+                            'invoice_deliveries','stripe_events','stripe_platform_settings'))::text$$,
+  '0/0/10');
 
 -- THE STATED BOUND. The write policies' helper DOES read private tables, by
 -- design, and is outside this closure -- recorded as a measurement so the

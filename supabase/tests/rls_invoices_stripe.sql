@@ -777,6 +777,13 @@ reset role;
 select ist.val('SW44 ...charges_enabled is still false and the event is on the ledger once, typed account.updated', format($$select (select charges_enabled::text from public.invoice_stripe_accounts where organisation_id = %L) || '|' || (select count(*) || max(type) from public.stripe_events where id = 'evt_sw42')$$, :'org_a'), 'false|1account.updated');
 set role service_role;
 select ist.val('SW45 a NEW event id flips it back on', format($$select public.stripe_account_updated('evt_sw45', %L, true)::text$$, :'acct_y'), 'true');
+-- OUT OF ORDER (audit 2026-11-18, finding 3): Stripe may deliver an older event last.
+select ist.val('SW45a an event created at 12:00 turns charges off', format($$select public.stripe_account_updated('evt_sw45a', %L, false, '2026-11-18 12:00+00')::text$$, :'acct_y'), 'true');
+select ist.val('SW45b an OLDER event (11:00) delivered after it is not applied (false)', format($$select public.stripe_account_updated('evt_sw45b', %L, true, '2026-11-18 11:00+00')::text$$, :'acct_y'), 'false');
+reset role;
+select ist.val('SW45c ...charges_enabled is still false, and the stale event is on the ledger', format($$select (select charges_enabled::text from public.invoice_stripe_accounts where organisation_id = %L) || '|' || (select count(*) from public.stripe_events where id = 'evt_sw45b')$$, :'org_a'), 'false|1');
+set role service_role;
+select ist.val('SW45d CONTROL: a NEWER event (13:00) is applied and turns charges back on', format($$select public.stripe_account_updated('evt_sw45d', %L, true, '2026-11-18 13:00+00')::text$$, :'acct_y'), 'true');
 select ist.val('SW46 deauthorized ends the live link', format($$select public.stripe_account_deauthorized('evt_sw46', %L)::text$$, :'acct_y'), 'true');
 reset role;
 select ist.val('SW47 ...the event is on the ledger for A, typed account.application.deauthorized', format($$select (organisation_id = %L)::text || '|' || type from public.stripe_events where id = 'evt_sw46'$$, :'org_a'), 'true|account.application.deauthorized');

@@ -12,7 +12,7 @@ describe("invoiceRefusal", () => {
       "invoice_lines_invalid", "invoice_one_recipient", "invoice_not_issued",
       "invoice_paid_on_out_of_range", "invoice_not_voidable", "invoice_void_reason_required",
       "invoice_not_sendable", "invoice_send_email_invalid", "invoice_number_taken",
-      "invoice_settings_invalid",
+      "invoice_settings_invalid", "invoice_delivery_refused",
     ]) {
       expect(INVOICE_REFUSAL_SENTENCES[hint], hint).toBeTruthy();
       expect(invoiceRefusal({ code: "22023", hint, message: "x" })).toBe(INVOICE_REFUSAL_SENTENCES[hint]);
