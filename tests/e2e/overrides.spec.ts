@@ -148,7 +148,7 @@ test("the golden walk: grant a Pro override → the Starter workspace's own limi
     // ---- BEFORE. world.orgId is really Starter: 5 custom fields per entity.
     await signIn(customerPage, world, "manager");
     await customerPage.goto(`/${world.orgSlug}/settings/custom-fields?entity=contact`);
-    await expect(customerPage.getByText(/of\s*5\s*fields used/)).toBeVisible();
+    await expect(customerPage.locator("#main").getByText(/of\s*5\s*fields used/)).toBeVisible();
 
     // ---- GRANT, from the operator's own surface. ---------------------------
     await signInAsSuperuser(operatorPage);
@@ -193,7 +193,7 @@ test("the golden walk: grant a Pro override → the Starter workspace's own limi
 
     // ---- THE EFFECTIVE TIER ACTUALLY CHANGED. -----------------------------
     await customerPage.goto(`/${world.orgSlug}/settings/custom-fields?entity=contact`);
-    await expect(customerPage.getByText(/doesn.t limit how many/)).toBeVisible();
+    await expect(customerPage.locator("#main").getByText(/doesn.t limit how many/)).toBeVisible();
 
     // ---- THE CLOCK, SHOWN TO THE ORG'S OWN ADMIN. --------------------------
     await signInAsOrgAdmin(adminPage);
@@ -205,7 +205,7 @@ test("the golden walk: grant a Pro override → the Starter workspace's own limi
     // ---- (SIMULATED) EXPIRY RESTORES THE STARTER DENIAL. -------------------
     await expireBillingOverride(world.orgId);
     await customerPage.goto(`/${world.orgSlug}/settings/custom-fields?entity=contact`);
-    await expect(customerPage.getByText(/of\s*5\s*fields used/)).toBeVisible();
+    await expect(customerPage.locator("#main").getByText(/of\s*5\s*fields used/)).toBeVisible();
     await adminPage.goto(`/${world.orgSlug}`);
     await expect(adminPage.getByTestId("billing-override-summary")).toHaveCount(0);
   } finally {
