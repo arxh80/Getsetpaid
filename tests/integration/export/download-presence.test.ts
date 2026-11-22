@@ -4,7 +4,8 @@
 // proved here against the local stack, not only a mock: a present archive is
 // present, and a genuinely missing one is still "missing" (the not-found
 // answer), not "error" (the 503). FOLLOW-UPS M2 is why: the local API answers
-// a HEAD on a missing object with 400, which exists() could not tell apart.
+// a HEAD on a missing object with 400, which exists() (storage-js < 2.119)
+// could not tell apart.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient } from "@supabase/supabase-js";
 import { getLocalSupabaseStatus } from "../rls/support/env";
@@ -34,9 +35,14 @@ describe("objectPresence against the local storage API (G20)", () => {
     expect(await objectPresence(storage.from("exports"), `${KEY}.gone`)).toBe("missing");
   });
 
-  it("and the HEAD that exists() makes cannot say so: it answers 400", async () => {
+  // Before storage-js 2.119, exists() sent a HEAD and the local API answered
+  // 400 for a missing object, so "missing" could not be told from a bad
+  // request. Since 2.119 exists() calls info() itself, the same call
+  // objectPresence() makes, and a missing object is a 404. If a release goes
+  // back to the HEAD, this goes red, which is the cue to re-check objectPresence.
+  it("exists() now goes through info(): a missing object is false with a 404", async () => {
     const { data, error } = await storage.from("exports").exists(`${KEY}.gone`);
     expect(data).toBe(false);
-    expect((error as { statusCode?: string } | null)?.statusCode).toBe("400");
+    expect((error as { statusCode?: string } | null)?.statusCode).toBe("404");
   });
 });
