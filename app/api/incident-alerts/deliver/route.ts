@@ -31,33 +31,20 @@ import {
 // pg_net-POSTs here with `Authorization: Bearer
 // <INCIDENT_ALERT_DELIVERY_SECRET>`, read from Supabase Vault.
 //
-// TEN DELIVERIES, ONE CLOCK, INDEPENDENT RESULTS:
-//   * the OPERATOR's digest -- one email covering every alert nobody has been
-//     emailed about, stamping `notified_at` after ok:true
-//     (lib/email/incident-alerts.ts);
-//   * the OPERATOR's Telegram alert (founder 2026-09-30, Q111) -- one
-//     counts-only message, stamping its OWN column `telegram_notified_at`
-//     after ok:true, a no-op when TELEGRAM_BOT_TOKEN/TELEGRAM_ALERT_CHAT_ID
-//     are unset (same module, 20261014000000);
-//   * the ACCOUNT HOLDER's lockout notice -- one email per locked-out account,
-//     stamping `account_notified_at` after ok:true
-//     (lib/email/lockout-notification.ts, founder ruling Q114);
-//   * since 20261015000000 (founder 2026-09-30, Q157(3)/Q174/Q45), the
-//     REQUESTER's DSR received/closed notices and export-ready notice, and
-//     the SUPERUSER's erasure-failure notice (lib/email/requester-
-//     notifications.ts), each stamping its own column after ok:true;
-//   * since 20261016000000 (same ruling), the connection-request received /
-//     accepted / declined notices and the task reminder (lib/email/
-//     network-notifications.ts, lib/email/task-reminder-notifications.ts),
-//     each stamping a row in
-//     private.notification_deliveries after ok:true;
-//   * since Task 9c job 2b (founder 2026-09-30, Q176/Q178), the SUPERUSER's
-//     workspace-closed notice and the remaining Owners'/Admins' reassigned /
-//     deleted notice (lib/email/workspace-closure-notifications.ts), each
-//     stamping a ledger row keyed on its audit row after ok:true.
-//     Worst case of the whole route ~490 s against the 600 s cadence (the
-//     shared per-loop budget tightened 60 s -> 45 s, Q204; the arithmetic is
-//     in lib/email/requester-notifications.ts).
+// TWELVE DELIVERIES, ONE CLOCK, INDEPENDENT RESULTS: the operator's email
+// digest and Telegram alert, the lockout notice, the requester's DSR and
+// export-ready notices, the erasure-failure notice, the connection-request and
+// task-reminder notices, the workspace closure and decision notices, and the
+// invoice bank-change and Stripe-account notices. Each stamps its own rows
+// only after Brevo (or Telegram) accepted the send.
+//
+// ONE DEADLINE FOR THE ROUTE. Nothing claims a row before sending it, so a run
+// still sending when the next tick starts would send its unstamped rows twice.
+// Each delivery bounds itself (lockouts ~130 s, the others ~55 s at worst), so
+// none STARTS after LAST_START_MS: the run ends by ~530 s, inside the 600 s
+// tick, however many deliveries are added. A delivery not started is reported
+// `deferred` and its rows wait for the next tick, unstamped.
+//
 // They are deliberately not folded together: different recipients, different
 // content, different failure. Each runs even if the other fails, and each
 // reports its own outcome in the response body.
@@ -69,9 +56,17 @@ import {
 // is a side effect.
 // ===========================================================================
 
+/** No delivery starts later than this into the run (see ONE DEADLINE above). */
+const LAST_START_MS = 400_000;
+
 async function settle<T>(
+  startedAt: number,
   run: () => Promise<T>,
-): Promise<T | { readonly outcome: "unavailable"; readonly error: string }> {
+): Promise<T | { readonly outcome: "unavailable"; readonly error: string } | { readonly outcome: "deferred" }> {
+  if (Date.now() - startedAt >= LAST_START_MS) {
+    console.error("[delivery] the run's start deadline passed; this delivery waits for the next tick");
+    return { outcome: "deferred" };
+  }
   try {
     return await run();
   } catch (err) {
@@ -94,19 +89,20 @@ export async function POST(request: Request): Promise<NextResponse> {
   // must not skip the next. The email digest runs first and its stamp is
   // written inside its own call, so nothing the Telegram half does afterwards
   // can reach it, and vice versa.
-  const digest = await settle(deliverPendingIncidentAlerts);
-  const telegram = await settle(deliverPendingIncidentAlertsToTelegram);
-  const lockouts = await settle(deliverLockoutNotifications);
-  const dataRequests = await settle(deliverDsrNotifications);
-  const exportsReady = await settle(deliverExportReadyNotifications);
-  const erasureFailures = await settle(deliverErasureFailureNotifications);
-  const connectionRequests = await settle(deliverConnectionRequestNotifications);
-  const taskReminders = await settle(deliverTaskReminderNotifications);
-  const workspaceClosures = await settle(deliverWorkspaceClosureNotifications);
-  const workspaceDecisions = await settle(deliverWorkspaceDecisionNotifications);
-  const invoiceBankChanges = await settle(deliverInvoiceBankChangeNotifications);
-  const invoiceStripeAccounts = await settle(deliverInvoiceStripeAccountNotifications);
-  const invoiceDeliveries = await settle(deliverInvoiceDeliveredNotifications);
+  const startedAt = Date.now();
+  const digest = await settle(startedAt, deliverPendingIncidentAlerts);
+  const telegram = await settle(startedAt, deliverPendingIncidentAlertsToTelegram);
+  const lockouts = await settle(startedAt, deliverLockoutNotifications);
+  const dataRequests = await settle(startedAt, deliverDsrNotifications);
+  const exportsReady = await settle(startedAt, deliverExportReadyNotifications);
+  const erasureFailures = await settle(startedAt, deliverErasureFailureNotifications);
+  const connectionRequests = await settle(startedAt, deliverConnectionRequestNotifications);
+  const taskReminders = await settle(startedAt, deliverTaskReminderNotifications);
+  const workspaceClosures = await settle(startedAt, deliverWorkspaceClosureNotifications);
+  const workspaceDecisions = await settle(startedAt, deliverWorkspaceDecisionNotifications);
+  const invoiceBankChanges = await settle(startedAt, deliverInvoiceBankChangeNotifications);
+  const invoiceStripeAccounts = await settle(startedAt, deliverInvoiceStripeAccountNotifications);
+  const invoiceDeliveries = await settle(startedAt, deliverInvoiceDeliveredNotifications);
 
   const unavailable = [
     digest,

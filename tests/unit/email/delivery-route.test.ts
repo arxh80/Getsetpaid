@@ -360,3 +360,35 @@ describe("the delivery route's gate", () => {
     expect((await POST(post(`Bearer ${SECRET}`))).status).toBe(200);
   });
 });
+
+describe("the route's start deadline (a run must end before the next 10-minute tick)", () => {
+  // Date.now() is read once for the start, then once before each delivery.
+  function clockAt(...readings: number[]) {
+    let i = 0;
+    return vi.spyOn(Date, "now").mockImplementation(() => readings[Math.min(i++, readings.length - 1)]);
+  }
+
+  it("starts no delivery once 400 s have passed: the rest are deferred, unstamped, and it is not a 503", async () => {
+    process.env.INCIDENT_ALERT_DELIVERY_SECRET = SECRET;
+    const clock = clockAt(0, 0, 0, 400_000);
+    const res = await POST(post(`Bearer ${SECRET}`));
+    clock.mockRestore();
+    expect(res.status).toBe(200);
+    expect(deliver.fn).toHaveBeenCalledTimes(1);
+    expect(deliver.telegram).toHaveBeenCalledTimes(1);
+    expect(deliver.lockouts).not.toHaveBeenCalled();
+    expect(deliver.stripe).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.accountNotifications).toEqual({ outcome: "deferred" });
+    expect(body.invoiceStripeAccountNotifications).toEqual({ outcome: "deferred" });
+  });
+
+  it("CONTROL: one millisecond earlier, every delivery still runs", async () => {
+    process.env.INCIDENT_ALERT_DELIVERY_SECRET = SECRET;
+    const clock = clockAt(0, 399_999);
+    const res = await POST(post(`Bearer ${SECRET}`));
+    clock.mockRestore();
+    expect(res.status).toBe(200);
+    for (const fn of Object.values(deliver)) expect(fn).toHaveBeenCalledTimes(1);
+  });
+});
