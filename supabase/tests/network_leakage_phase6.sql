@@ -131,6 +131,12 @@ grant execute on function leak.val(text,text,text)    to authenticated, anon, se
 
 select id as alpha_org from public.organisations where slug='org-alpha' \gset
 select id as beta_org  from public.organisations where slug='org-beta'  \gset
+-- ALPHA arrives row-less, which is Free since 20261120000000: give it the
+-- Starter row every real workspace is born with (§ LZ removes it again).
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values (:'alpha_org'::uuid, 'starter', 'monthly', 1, 'active', now() + interval '30 days')
+on conflict (organisation_id) do update set plan_id='starter', status='active';
 
 \o
 
@@ -468,6 +474,8 @@ reset role; reset request.jwt.claims;
 
 \o /dev/null
 update public.organisations set deleted_at = now() where id = :'alpha_org';
+-- Wound down means no subscription row too; the file-top Starter row comes back below.
+delete from public.organisation_subscriptions where organisation_id = :'alpha_org';
 \o
 set role authenticated;
 set request.jwt.claims = :'pbmgr_c';
@@ -480,6 +488,9 @@ reset role; reset request.jwt.claims;
 \o /dev/null
 update public.organisations set deleted_at = null where id = :'alpha_org';
 delete from public.network_profiles where id = 'e0110000-0000-0000-0000-0000000000f9';
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values (:'alpha_org'::uuid, 'starter', 'monthly', 1, 'active', now() + interval '30 days');
 \o
 
 set role authenticated;
@@ -1527,7 +1538,10 @@ reset role; reset request.jwt.claims;
 
 \o /dev/null
 update public.organisations set deleted_at = null where id = :'alpha_org';
-delete from public.organisation_subscriptions where organisation_id = :'alpha_org';
+-- Back to Starter, not row-less (Free since 20261120000000): § LK publishes.
+update public.organisation_subscriptions
+   set plan_id='starter', status='active', current_period_end = now() + interval '30 days'
+ where organisation_id = :'alpha_org';
 \o
 select leak.val('LJ7 HOUSEKEEPING: ALPHA is reinstated, so nothing downstream meets a suspended org',
   format($$select (deleted_at is null)::text from public.organisations where id=%L$$,
@@ -1700,6 +1714,9 @@ select leak.val('LZ1 GAMMA publishes NO network profile (the "4 published profil
 select leak.val('LZ1b CONTROL: the whole schema still holds exactly 4 published, live profiles',
   $$select count(*)::text from public.network_profiles
      where status='published' and deleted_at is null$$, '4');
+\o /dev/null
+delete from public.organisation_subscriptions where organisation_id = :'alpha_org';
+\o
 select leak.val('LZ2 this file left no ALPHA organisation_subscriptions row behind',
   format($$select count(*)::text from public.organisation_subscriptions where organisation_id=%L$$,
          :'alpha_org'), '0');

@@ -31,36 +31,20 @@
 // assertion that carries the file.
 //
 // ===========================================================================
-// AND THE MIRROR IS BACKWARDS FROM THE NAIVE READING, SAME AS THE OTHER TWO
+// NO SUBSCRIPTION ROW IS FREE ON BOTH SIDES (20261120000000)
 // ===========================================================================
 // lib/entitlements/policy.ts resolves an organisation with NO subscription row
 // to { status: "no-subscription", tier: "free" }, and TIER_MATRIX.free
-// .networkPublish is FALSE. private.network_publish_organisations() says the
-// opposite for that case, deliberately -- STILL, as of Phase 7 Task A
-// (2026-09-08): that task closed the identical escape on private.
-// crm_write_organisations() and private.custom_field_limit() (and their
-// TypeScript mirrors), but this one and private.finance_module_
-// organisations()'s twin are a deliberate, separate follow-up (FOLLOW-UPS.md
-// § "Phase 7 -- superuser dashboard"). public.create_organisation() NOW writes
-// a Starter subscription row at birth, so "no subscription row" is no longer
-// the state every organisation in the product is in -- the organisations this
+// .networkPublish is false. Until 20261120000000, private.network_publish_organisations()
+// exempted that case ("not yet billed => not yet gated") and
+// lib/network/access.ts returned true to match. Both halves dropped the escape in
+// the same change, as Phase 7 Task A did for the CRM gate, and the no-row
+// case below now asserts the refusal on both sides. The organisations this
 // test drives are planted by direct inserts into public.organisations
-// (`bothSides()` below), bypassing create_organisation() on purpose, which is
-// the only way left to reach that state at all. It remains true that reading
-// `networkPublish` straight off the resolved entitlements for an organisation
-// in that state -- the obvious thing -- would disable its network write
-// controls while the database happily accepted the write from anything that
-// bypassed the UI.
+// (`bothSides()` below), bypassing create_organisation(), which is the only
+// way to reach that state.
 //
-// If this file goes red because a future task removed the
-// `s.organisation_id is null` escape from private.network_publish_
-// organisations(), the fix is to remove it from lib/network/access.ts in the
-// same change -- not to relax the test. (This is exactly what happened to
-// tests/integration/crm/crm-write-access-matches-db.test.ts in Task A.)
-// FOLLOW-UPS.md § "Phase 7 -- superuser dashboard": an inert gate makes a
-// wrong test green, so these assertions are written to be RE-READ at that
-// point, not merely re-run.
-//
+// ===========================================================================
 // ===========================================================================
 // ALL THREE EXPORTS, NOT JUST THE PURE ONE
 // ===========================================================================
@@ -299,15 +283,16 @@ function refusal(result: CrmWriteAccess, label: string): {
 }
 
 describe("entitlementsPermitNetworkPublish mirrors private.network_publish_organisations()", () => {
-  it("agrees on NO SUBSCRIPTION ROW, which is every organisation today", async () => {
+  it("agrees on NO SUBSCRIPTION ROW: Free, so refused on both sides (20261120000000)", async () => {
     const r = await bothSides(null);
     expect(
       r.networkDb,
-      "the database permits network writes with no subscription row",
-    ).toBe(true);
+      "the database refuses network writes with no subscription row",
+    ).toBe(false);
     expect(r.networkTs, r.label).toBe(r.networkDb);
-    expect(r.publishCanWrite, `getNetworkPublishAccess: ${r.label}`).toBe(true);
-    expect(r.connectCanWrite, `getNetworkConnectionAccess: ${r.label}`).toBe(true);
+    expect(r.publishCanWrite, `getNetworkPublishAccess: ${r.label}`).toBe(false);
+    expect(r.connectCanWrite, `getNetworkConnectionAccess: ${r.label}`).toBe(false);
+    expect(r.publishReason, `${r.label}: publish refusal reason`).toBe("tier");
   });
 
   it("agrees on every plan at status active, on all three exports", async () => {

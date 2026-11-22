@@ -48,32 +48,16 @@ import "server-only";
 //   3. permission   this role does not hold the key. Ask an Owner/Admin.
 //
 // ===========================================================================
-// THE TIER CHECK MIRRORS A DATABASE ESCAPE, AND GETTING IT WRONG WOULD DISABLE
-// EVERY NETWORK WRITE CONTROL IN THE PRODUCT
+// THE TIER CHECK MIRRORS THE DATABASE GATE
 // ===========================================================================
 // lib/entitlements/policy.ts resolves an organisation with NO subscription row
-// to { status: "no-subscription", tier: "free" }.
-// private.network_publish_organisations() exempts exactly that case ("not yet
-// billed => not yet gated") -- STILL, as of Phase 7 Task A (2026-09-08): that
-// task closed the identical escape on private.crm_write_organisations() and
-// private.custom_field_limit(), but deliberately left this one (and private.
-// finance_module_organisations()'s twin) untouched -- see FOLLOW-UPS.md
-// § "Phase 7 -- superuser dashboard" for the follow-up entry Task A added when
-// it discharged the CRM one. public.create_organisation() DOES write a
-// subscription row now (a Starter one, at birth), so "no subscription row" is
-// no longer the state every organisation is in -- it is reachable only by an
-// organisation planted directly (bypassing create_organisation()), which is
-// exactly how the binding test below constructs it. So
-// entitlementsPermitNetworkPublish MUST still return TRUE for
-// "no-subscription" -- reading networkPublish straight off TIER_MATRIX.free
-// (which is FALSE) would disable every network write control in every
-// workspace still reachable in that state, while the database happily
-// accepted the write. The mirror is explicit and bound by
-// tests/integration/network/network-access-matches-db.test.ts, which drives
-// BOTH sides across every subscription status and both grace sides; when a
-// future task removes the escape from the function, that test goes red here
-// -- the same way crm-write-access-matches-db.test.ts did for the CRM escape
-// in Task A.
+// to { status: "no-subscription", tier: "free" }. Until 20261120000000,
+// private.network_publish_organisations() exempted that case ("not yet billed
+// => not yet gated") and this function returned true to match. That migration
+// removed the escape, as Phase 7 Task A did for the CRM gate, so
+// "no-subscription" now reads Free's networkPublish (false) here too. Only a
+// directly planted organisation is ever in that state. The mirror is bound by
+// tests/integration/network/network-access-matches-db.test.ts.
 
 import { getOrganisationEntitlements } from "@/lib/entitlements/policy";
 import { hasPermission, type CurrentOrg } from "@/lib/auth";
@@ -102,7 +86,7 @@ const EXPLANATION = {
  * without a session. Mirrors entitlementsPermitFinance clause for clause,
  * reading `networkPublish` where that reads `financeModule`:
  *
- *   "no-subscription"  -> true   (the database escape; not yet billed)
+ *   "no-subscription"  -> Free's networkPublish, false (20261120000000)
  *   "indeterminate"    -> false  (the conservative half; a failed lookup here
  *                                 disables a button, and disabling is safe)
  *   "resolved"         -> the plan's networkPublish (Starter/Pro true, Free
@@ -112,7 +96,6 @@ export function entitlementsPermitNetworkPublish(result: {
   status: "no-subscription" | "resolved" | "indeterminate";
   entitlements: { networkPublish: boolean };
 }): boolean {
-  if (result.status === "no-subscription") return true;
   if (result.status === "indeterminate") return false;
   return result.entitlements.networkPublish;
 }
