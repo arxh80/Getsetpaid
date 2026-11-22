@@ -410,6 +410,12 @@ const TABLES_WITHOUT_SOFT_DELETE = new Set([
   // soft-deleted network profile is not restorable from the DIRECTORY, it is
   // restorable from its owner's own list over the base table.
   "network_directory",
+  // ADDED BY INVOICES PART 3. `public.received_invoices` is a definer VIEW and
+  // projects no `deleted_at`: its own WHERE drops a withdrawn delivery, once,
+  // for every reader, and an issued invoice is never deleted. It DOES project
+  // `organisation_id` (the receiving workspace), so it is NOT in
+  // RELATIONS_WITHOUT_ORGANISATION_ID: the tenant clause applies as usual.
+  "received_invoices",
 ]);
 
 /**

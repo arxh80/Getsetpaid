@@ -167,6 +167,9 @@ export const SCANNED_ELSEWHERE: readonly { route: string; spec: string }[] = [
   { route: "/[orgSlug]/network/[profileId]", spec: "accessibility.spec.ts" },
   { route: "/[orgSlug]/network/profiles/[profileId]", spec: "accessibility.spec.ts" },
   { route: "/[orgSlug]/network/requests", spec: "accessibility.spec.ts" },
+  // Invoices part 3: scanned as the RECEIVING workspace's Owner.
+  { route: "/[orgSlug]/invoices/received", spec: "invoices-network.spec.ts" },
+  { route: "/[orgSlug]/invoices/received/[deliveryId]", spec: "invoices-network.spec.ts" },
   { route: "/account/data-requests", spec: "data-requests.spec.ts" },
   { route: "/account/exports", spec: "exports.spec.ts" },
   { route: "/account/privacy", spec: "consent.spec.ts" },

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NoticeContentError } from "@/lib/email/requester-templates";
-import { buildBankDetailsChangedNotice, buildInvoiceEmail, buildStripeAccountChangedNotice } from "@/lib/email/invoice-templates";
+import { buildBankDetailsChangedNotice, buildInvoiceDeliveredNotice, buildInvoiceEmail, buildStripeAccountChangedNotice } from "@/lib/email/invoice-templates";
 
 const base = {
   organisationSlug: "neon-nights",
@@ -126,5 +126,45 @@ describe("buildInvoiceEmail", () => {
   });
   it("refuses a number outside the invoice shape", () => {
     expect(() => buildInvoiceEmail({ ...input, number: "../x" })).toThrow();
+  });
+});
+
+describe("buildInvoiceDeliveredNotice", () => {
+  const input = {
+    organisationSlug: "neon-nights",
+    organisationName: "Neon Nights Ltd",
+    senderName: "Alpha Promotions Ltd",
+    deliveredAt: "2026-11-17T12:00:00.000Z",
+    siteUrl: "https://app.example.test",
+  };
+
+  it("names the sender and the workspace and links ONLY to the received inbox", () => {
+    const body = buildInvoiceDeliveredNotice(input);
+    expect(body.subject).toBe("[GetSetPaid] New invoice from Alpha Promotions Ltd");
+    expect(body.text).toContain("Alpha Promotions Ltd");
+    expect(body.text).toContain("neon-nights");
+    expect(body.text).toContain("https://app.example.test/neon-nights/invoices/received");
+    expect(body.html.match(/href=/g)).toHaveLength(1);
+    expect(body.text.match(/https?:\/\//g)).toHaveLength(1);
+  });
+
+  it("carries no amount, no number and no line detail", () => {
+    const body = buildInvoiceDeliveredNotice(input);
+    expect(body.text).not.toMatch(/£|INV-|\d+\.\d{2}/);
+  });
+
+  it("refuses an input key outside the allowlist and a bad slug", () => {
+    expect(() => buildInvoiceDeliveredNotice({ ...input, number: "INV-0001" } as typeof input)).toThrow();
+    expect(() => buildInvoiceDeliveredNotice({ ...input, organisationSlug: "../x" })).toThrow();
+  });
+
+  it("neutralises a link smuggled into the sender name", () => {
+    const body = buildInvoiceDeliveredNotice({ ...input, senderName: "Evil https://evil.example/x" });
+    expect(body.html.match(/href=/g)).toHaveLength(1);
+    expect(body.text + body.subject).not.toContain("https://evil.example");
+  });
+
+  it("falls back to a neutral sender when the snapshot has no name", () => {
+    expect(buildInvoiceDeliveredNotice({ ...input, senderName: "" }).subject).toBe("[GetSetPaid] New invoice from A connected workspace");
   });
 });
