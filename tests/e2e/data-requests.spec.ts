@@ -354,8 +354,12 @@ test("a Manager asks for a copy of their data, the operator works it, and an ove
     ).toBe("fulfilled");
 
     // ---- 6. THE ALERT NOBODY HAD TO GO LOOKING FOR -------------------------
-    const written = await raiseDsrDeadlineAlerts();
-    expect(written, "the overdue request must raise an alert").toBeGreaterThanOrEqual(1);
+    // Not `expect(written).toBeGreaterThanOrEqual(1)`: the */10 pg_cron tick
+    // runs the same raise, and when it lands between the backdate above and
+    // this call it writes the alert first and this call returns 0 (main CI,
+    // 2026-11-22, 18:50:03). The request was created by this test, so the row
+    // for `requestId` on /super/health below is the assertion that it was raised.
+    await raiseDsrDeadlineAlerts();
     await operator.goto("/super/health");
     // The label appears twice on this page -- once as an <option> in the
     // alert-type filter and once on the row itself. The row is the one that
