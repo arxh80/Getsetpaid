@@ -29,7 +29,7 @@ vi.mock("@/lib/entitlements/policy", async (importActual) => {
   return {
     ...actual,
     // An active Starter row, which carries network_publish (no row is Free
-    // since 20261120000000). Fixed for every test in this file, via the SAME
+    // since 20261120002000). Fixed for every test in this file, via the SAME
     // resolveEntitlements() the real code path calls, so only `hasPermission`
     // varies.
     getOrganisationEntitlements: vi.fn().mockResolvedValue(

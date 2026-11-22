@@ -186,7 +186,7 @@ select nw.val('N00 FIXTURE: four profiles exist -- 2 published live, 1 draft, 1 
       from public.network_profiles$$, '2/1/1');
 
 -- ALPHA arrives row-less (rls_phase5_finance.sql § FI18), which is Free since
--- 20261120000000, so it gets the Starter row every real workspace is born
+-- 20261120002000, so it gets the Starter row every real workspace is born
 -- with. § NZ removes it again, so downstream suites meet the state they expect.
 insert into public.organisation_subscriptions
   (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
@@ -737,14 +737,14 @@ select nw.val('NG3b CONTROL: they hold 8 table-level SELECT/INSERT/UPDATE grants
 -- the gate is inert in the shipped state (create_organisation writes no
 -- subscription row, so every org matches the escape).
 --
--- 20261120000000 REMOVED THE ESCAPE, AND NT1 WAS RE-READ AND FLIPPED: a
+-- 20261120002000 REMOVED THE ESCAPE, AND NT1 WAS RE-READ AND FLIPPED: a
 -- workspace with no subscription row now gets Free's entitlements, so the
 -- INSERT is refused. The profile NT5 edits is then planted as postgres.
 -- ===========================================================================
 delete from public.organisation_subscriptions where organisation_id = :'alpha_org'::uuid;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select nw.try('NT1 NO SUBSCRIPTION ROW is Free: the INSERT is refused (20261120000000 removed the escape)',
+select nw.try('NT1 NO SUBSCRIPTION ROW is Free: the INSERT is refused (20261120002000 removed the escape)',
   format($$insert into public.network_profiles
              (id, organisation_id, entity_kind, entity_id, display_name, field_visibility)
            values ('e0110000-0000-0000-0000-0000000000f1', %L, 'venue',

@@ -21,11 +21,11 @@
 // and it is asserted on BOTH sides of the mirror.
 //
 // ===========================================================================
-// NO SUBSCRIPTION ROW IS FREE ON BOTH SIDES (20261120000000)
+// NO SUBSCRIPTION ROW IS FREE ON BOTH SIDES (20261120002000)
 // ===========================================================================
 // lib/entitlements/policy.ts resolves an organisation with NO subscription row
 // to { status: "no-subscription", tier: "free" }, and TIER_MATRIX.free
-// .financeModule is false. Until 20261120000000, private.finance_module_organisations()
+// .financeModule is false. Until 20261120002000, private.finance_module_organisations()
 // exempted that case ("not yet billed => not yet gated") and
 // lib/crm/finance-access.ts returned true to match. Both halves dropped the escape in
 // the same change, as Phase 7 Task A did for the CRM gate, and the no-row
@@ -265,7 +265,7 @@ async function bothSides(subscription: Subscription | null): Promise<Sides> {
 }
 
 describe("entitlementsPermitFinance mirrors private.finance_module_organisations()", () => {
-  it("agrees on NO SUBSCRIPTION ROW: Free, so refused on both sides (20261120000000)", async () => {
+  it("agrees on NO SUBSCRIPTION ROW: Free, so refused on both sides (20261120002000)", async () => {
     const r = await bothSides(null);
     expect(
       r.financeDb,
@@ -569,7 +569,7 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
     ).toBe("tier");
 
     // ...and with the tier satisfied (Pro; no subscription row is Free since
-    // 20261120000000), the permission is what is left.
+    // 20261120002000), the permission is what is left.
     vi.mocked(getOrganisationEntitlements).mockResolvedValue(
       resolveEntitlements({
         data: {

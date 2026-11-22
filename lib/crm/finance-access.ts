@@ -45,7 +45,7 @@ import "server-only";
 // ===========================================================================
 // lib/entitlements/policy.ts resolves an organisation with NO subscription row
 // to { status: "no-subscription" } with Free's entitlements. Until
-// 20261120000000, private.finance_module_organisations() exempted that case
+// 20261120002000, private.finance_module_organisations() exempted that case
 // ("not yet billed => not yet gated") and this function returned true to
 // match. That migration removed the escape, as Phase 7 Task A did for
 // private.crm_write_organisations(), so "no-subscription" now reads Free's
@@ -75,7 +75,7 @@ const EXPLANATION = {
  * without a session. Mirrors entitlementsPermitCrmWrites clause for clause,
  * reading `financeModule` where that reads `crmWrites`:
  *
- *   "no-subscription"  -> Free's financeModule, false (20261120000000)
+ *   "no-subscription"  -> Free's financeModule, false (20261120002000)
  *   "indeterminate"    -> false  (the conservative half; a failed lookup here
  *                                 disables a button, and disabling is safe)
  *   "resolved"         -> the plan's financeModule (Pro true, else false)

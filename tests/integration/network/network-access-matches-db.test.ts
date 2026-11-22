@@ -31,11 +31,11 @@
 // assertion that carries the file.
 //
 // ===========================================================================
-// NO SUBSCRIPTION ROW IS FREE ON BOTH SIDES (20261120000000)
+// NO SUBSCRIPTION ROW IS FREE ON BOTH SIDES (20261120002000)
 // ===========================================================================
 // lib/entitlements/policy.ts resolves an organisation with NO subscription row
 // to { status: "no-subscription", tier: "free" }, and TIER_MATRIX.free
-// .networkPublish is false. Until 20261120000000, private.network_publish_organisations()
+// .networkPublish is false. Until 20261120002000, private.network_publish_organisations()
 // exempted that case ("not yet billed => not yet gated") and
 // lib/network/access.ts returned true to match. Both halves dropped the escape in
 // the same change, as Phase 7 Task A did for the CRM gate, and the no-row
@@ -283,7 +283,7 @@ function refusal(result: CrmWriteAccess, label: string): {
 }
 
 describe("entitlementsPermitNetworkPublish mirrors private.network_publish_organisations()", () => {
-  it("agrees on NO SUBSCRIPTION ROW: Free, so refused on both sides (20261120000000)", async () => {
+  it("agrees on NO SUBSCRIPTION ROW: Free, so refused on both sides (20261120002000)", async () => {
     const r = await bothSides(null);
     expect(
       r.networkDb,

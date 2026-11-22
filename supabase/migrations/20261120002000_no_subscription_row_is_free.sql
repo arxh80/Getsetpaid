@@ -30,7 +30,7 @@ as $$
     and e.status_ok and e.finance_module;
 $$;
 comment on function private.finance_module_organisations() is
-  'Subscription entitlement for the FINANCE MODULE: the organisations in which auth.uid() is an active member of a not-soft-deleted organisation whose effective plan (private.effective_organisation_plan(), so an active billing override applies) has finance_module with status_ok. No subscription row means no entitlement (20261120000000 removed the "not yet billed" escape), as lib/crm/finance-access.ts''s entitlementsPermitFinance() now reads it too.';
+  'Subscription entitlement for the FINANCE MODULE: the organisations in which auth.uid() is an active member of a not-soft-deleted organisation whose effective plan (private.effective_organisation_plan(), so an active billing override applies) has finance_module with status_ok. No subscription row means no entitlement (20261120002000 removed the "not yet billed" escape), as lib/crm/finance-access.ts''s entitlementsPermitFinance() now reads it too.';
 revoke all on function private.finance_module_organisations() from public, anon, authenticated, service_role;
 grant execute on function private.finance_module_organisations() to authenticated;
 
@@ -52,7 +52,7 @@ as $$
     and e.status_ok and e.network_publish;
 $$;
 comment on function private.network_publish_organisations() is
-  'Subscription entitlement for NETWORK PUBLISHING, same shape as private.finance_module_organisations(): the effective plan''s network_publish with status_ok. No subscription row means no entitlement (20261120000000), as lib/network/access.ts''s entitlementsPermitNetworkPublish() now reads it too.';
+  'Subscription entitlement for NETWORK PUBLISHING, same shape as private.finance_module_organisations(): the effective plan''s network_publish with status_ok. No subscription row means no entitlement (20261120002000), as lib/network/access.ts''s entitlementsPermitNetworkPublish() now reads it too.';
 revoke all on function private.network_publish_organisations() from public, anon, authenticated, service_role;
 grant execute on function private.network_publish_organisations() to authenticated;
 

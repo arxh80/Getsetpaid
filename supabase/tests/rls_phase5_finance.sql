@@ -378,10 +378,10 @@ select fin.val('FB16 finance_module_organisations() reads e.finance_module (the 
 select fin.val('FB17 ...and does NOT read crm_writes (the copy-paste this file guards)',
   $$select (pg_get_functiondef('private.finance_module_organisations'::regproc)
             like '%crm_writes%')::text$$, 'false');
--- THE ESCAPE IS GONE. Until 20261120000000 a workspace with no subscription
+-- THE ESCAPE IS GONE. Until 20261120002000 a workspace with no subscription
 -- row passed this gate (`not e.has_subscription`); it now gets Free's
 -- entitlements, as lib/entitlements/policy.ts already gave it.
-select fin.val('FB18 ...and no longer carries the "not yet billed => not yet gated" escape (20261120000000)',
+select fin.val('FB18 ...and no longer carries the "not yet billed => not yet gated" escape (20261120002000)',
   $$select (pg_get_functiondef('private.finance_module_organisations'::regproc)
             like '%has_subscription%')::text$$, 'false');
 
@@ -672,12 +672,12 @@ reset role; reset request.jwt.claims;
 -- row at birth, and every downstream section from Phase 3 onward needs a
 -- working row to keep its own CRM writes working, so § N's cleanup upgrades
 -- rather than deletes). FE1 strips it explicitly, which is now the only way
--- to reach the "no subscription row" state. Since 20261120000000 that state
+-- to reach the "no subscription row" state. Since 20261120002000 that state
 -- gets Free's entitlements, so FE1 is a REFUSAL (it was the escape's baseline).
 delete from public.organisation_subscriptions where organisation_id = :'alpha_org'::uuid;
 set role authenticated;
 set request.jwt.claims = :'pfinance_c';
-select fin.try('FE1 NO ROW: no subscription row is Free, the finance write is REFUSED (20261120000000)',
+select fin.try('FE1 NO ROW: no subscription row is Free, the finance write is REFUSED (20261120002000)',
   format($$insert into public.financial_entries
              (organisation_id, event_id, category, amount_minor)
            values (%L,'ef110000-0000-0000-0000-000000000002','cost', 11)$$,
@@ -794,7 +794,7 @@ select fin.val('FE11b ...and the READS are still open across all of it (Q67 agai
 reset role; reset request.jwt.claims;
 
 -- Restore an active Pro row: section FF's aal2 writes need the finance module,
--- and a row-less workspace no longer has it (20261120000000).
+-- and a row-less workspace no longer has it (20261120002000).
 update public.organisation_subscriptions
    set plan_id='pro', status='active', current_period_end = now() + interval '30 days'
  where organisation_id = :'alpha_org'::uuid;

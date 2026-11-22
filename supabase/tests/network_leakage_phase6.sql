@@ -131,7 +131,7 @@ grant execute on function leak.val(text,text,text)    to authenticated, anon, se
 
 select id as alpha_org from public.organisations where slug='org-alpha' \gset
 select id as beta_org  from public.organisations where slug='org-beta'  \gset
--- ALPHA arrives row-less, which is Free since 20261120000000: give it the
+-- ALPHA arrives row-less, which is Free since 20261120002000: give it the
 -- Starter row every real workspace is born with (§ LZ removes it again).
 insert into public.organisation_subscriptions
   (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
@@ -1538,7 +1538,7 @@ reset role; reset request.jwt.claims;
 
 \o /dev/null
 update public.organisations set deleted_at = null where id = :'alpha_org';
--- Back to Starter, not row-less (Free since 20261120000000): § LK publishes.
+-- Back to Starter, not row-less (Free since 20261120002000): § LK publishes.
 update public.organisation_subscriptions
    set plan_id='starter', status='active', current_period_end = now() + interval '30 days'
  where organisation_id = :'alpha_org';

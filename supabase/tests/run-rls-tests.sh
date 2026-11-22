@@ -4285,7 +4285,7 @@ GAMMA_C1_PROFILE=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d pos
    values ('$GAMMA_ORG','company',gen_random_uuid(),'published','C1 HTTP Gamma Co','{}'::jsonb, now())
    returning id" | head -n1 | tr -d '[:space:]')
 # Sending needs network_publish on GAMMA and accepting needs it on ALPHA. Both
-# are planted without a subscription row, which is Free since 20261120000000,
+# are planted without a subscription row, which is Free since 20261120002000,
 # so both get the Starter row every real workspace is born with.
 p2_sub "insert into public.organisation_subscriptions
           (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)

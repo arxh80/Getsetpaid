@@ -204,7 +204,7 @@ select now()::text as c7_t0 \gset
 -- member write without one. finance_module_organisations() needs Pro. SAVE,
 -- PLANT Pro, RESTORE at § PZ. BETA gets Starter: § PN needs it to publish and
 -- to answer connection requests, and a workspace with no subscription row is
--- Free since 20261120000000.
+-- Free since 20261120002000.
 \o /dev/null
 create table c7.saved_sub as
   select * from public.organisation_subscriptions where organisation_id in (:'alpha_org', :'beta_org');

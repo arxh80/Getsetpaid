@@ -51,7 +51,7 @@ import "server-only";
 // THE TIER CHECK MIRRORS THE DATABASE GATE
 // ===========================================================================
 // lib/entitlements/policy.ts resolves an organisation with NO subscription row
-// to { status: "no-subscription", tier: "free" }. Until 20261120000000,
+// to { status: "no-subscription", tier: "free" }. Until 20261120002000,
 // private.network_publish_organisations() exempted that case ("not yet billed
 // => not yet gated") and this function returned true to match. That migration
 // removed the escape, as Phase 7 Task A did for the CRM gate, so
@@ -86,7 +86,7 @@ const EXPLANATION = {
  * without a session. Mirrors entitlementsPermitFinance clause for clause,
  * reading `networkPublish` where that reads `financeModule`:
  *
- *   "no-subscription"  -> Free's networkPublish, false (20261120000000)
+ *   "no-subscription"  -> Free's networkPublish, false (20261120002000)
  *   "indeterminate"    -> false  (the conservative half; a failed lookup here
  *                                 disables a button, and disabling is safe)
  *   "resolved"         -> the plan's networkPublish (Starter/Pro true, Free
