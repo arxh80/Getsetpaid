@@ -75,6 +75,7 @@ Skills are pinned project-level. Restore them with `npx skills experimental_inst
 - Never leave the working tree dirty at the end of a task.
 - Work on a branch and open a PR for non-trivial changes. Never commit feature work straight to `main`.
 - Never commit secrets, `.env` files, service-role keys or private-bucket contents.
+- **Code comments say why, not history.** No new Qnnn / Task / review ids or fix-round stories in comments; that history goes in the PR description. When you edit a comment that carries one, drop it if the why still reads without it.
 
 ## Working mode (founder, 2026-11-22)
 
