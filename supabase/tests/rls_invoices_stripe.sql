@@ -407,7 +407,19 @@ select organisation_id as st2_org from public.claim_stripe_link_state(:'st2') \g
 set request.jwt.claims = :'fin_a2_c';
 select ist.val('SL13 A CLAIMED STATE COMPLETED BY ANOTHER A FINANCE USER is refused stripe_link_state_invalid', format($$select public.complete_stripe_link(%L, %L, true)$$, :'st2', :'acct_l2'), 'denied(42501:stripe_link_state_invalid)');
 set request.jwt.claims = :'fin_a_c';
+-- The live link carries a newest-applied event time far ahead: a re-link must not keep it.
+reset role;
+update public.invoice_stripe_accounts set charges_enabled_event_at = '2099-01-01 00:00+00' where organisation_id = :'org_a';
+set role authenticated;
+set request.jwt.claims = :'fin_a_c';
 select ist.val('SL15 POSITIVE CONTROL: that state, untouched by the refusal, completes for fin_a -- a RE-LINK over the live account', format($$select 'ok' from (select public.complete_stripe_link(%L, %L, false)) s$$, :'st2', :'acct_l2'), 'ok');
+reset role;
+select ist.val('SL15a ...the RE-LINK cleared the old account''s newest-applied event time', format($$select (charges_enabled_event_at is null)::text from public.invoice_stripe_accounts where organisation_id = %L$$, :'org_a'), 'true');
+set role service_role;
+select ist.val('SL15b ...so the NEW account''s first event, created long before 2099, is applied (true), not ignored as older', format($$select public.stripe_account_updated('evt_sl15b', %L, false, '2026-11-18 09:00+00')::text$$, :'acct_l2'), 'true');
+reset role;
+set role authenticated;
+set request.jwt.claims = :'fin_a_c';
 -- An expired state: unclaimed (cannot be claimed), and claimed-then-expired (cannot be completed).
 select public.begin_stripe_link(:'org_a') as st3 \gset
 select public.begin_stripe_link(:'org_a') as st3b \gset
@@ -480,26 +492,27 @@ update public.invoice_stripe_accounts set stripe_account_id = :'acct_l4', charge
 set role authenticated;
 set request.jwt.claims = :'fin_a_c';
 select ist.val('SL32 as authenticated, stripe_account_deauthorized is refused by privilege', format($$select public.stripe_account_deauthorized('evt_sl32', %L)::text$$, :'acct_l4'), 'denied(42501)');
-select ist.val('SL33 as authenticated, stripe_account_updated is refused by privilege', format($$select public.stripe_account_updated('evt_sl33', %L, false)::text$$, :'acct_l4'), 'denied(42501)');
+select ist.val('SL33 as authenticated, stripe_account_updated is refused by privilege', format($$select public.stripe_account_updated('evt_sl33', %L, false, '2026-11-18 10:00+00')::text$$, :'acct_l4'), 'denied(42501)');
 reset role;
 reset request.jwt.claims;
 set role service_role;
-select ist.val('SL34 service_role: updated flips charges_enabled off for a live link and says it found one', format($$select public.stripe_account_updated('evt_sl34', %L, false)::text$$, :'acct_l4'), 'true');
+select ist.val('SL34 service_role: updated flips charges_enabled off for a live link and says it found one', format($$select public.stripe_account_updated('evt_sl34', %L, false, '2026-11-18 10:00+00')::text$$, :'acct_l4'), 'true');
 reset role;
 select ist.val('SL35 ...the flip landed: charges_enabled is false in the table', format($$select charges_enabled::text from public.invoice_stripe_accounts where organisation_id = %L$$, :'org_a'), 'false');
 set role service_role;
-select ist.val('SL35a ...and updated flips it back on', format($$select public.stripe_account_updated('evt_sl35a', %L, true)::text$$, :'acct_l4'), 'true');
+select ist.val('SL35a ...and updated flips it back on', format($$select public.stripe_account_updated('evt_sl35a', %L, true, '2026-11-18 10:01+00')::text$$, :'acct_l4'), 'true');
 reset role;
 select ist.val('SL35b ...which the table shows', format($$select charges_enabled::text from public.invoice_stripe_accounts where organisation_id = %L$$, :'org_a'), 'true');
 set role service_role;
-select ist.val('SL35c a REPEAT of the stored value is still found (true) and flips nothing', format($$select public.stripe_account_updated('evt_sl35c', %L, true)::text$$, :'acct_l4'), 'true');
+select ist.val('SL35c a REPEAT of the stored value is still found (true) and flips nothing', format($$select public.stripe_account_updated('evt_sl35c', %L, true, '2026-11-18 10:02+00')::text$$, :'acct_l4'), 'true');
 reset role;
 set role service_role;
-select ist.val('SL36 an account nobody holds is false', $$select public.stripe_account_updated('evt_sl36', 'acct_Nobody1', true)::text$$, 'false');
+select ist.val('SL36 an account nobody holds is false', $$select public.stripe_account_updated('evt_sl36', 'acct_Nobody1', true, '2026-11-18 10:02+00')::text$$, 'false');
+select ist.val('SL36a an event with NO created time is refused stripe_event_created_required (a null would skip the ordering check)', format($$select public.stripe_account_updated('evt_sl36a', %L, true, null)::text$$, :'acct_l4'), 'denied(22023:stripe_event_created_required)');
 select ist.val('SL37 service_role: deauthorized ends the live link and says it found one', format($$select public.stripe_account_deauthorized('evt_sl37', %L)::text$$, :'acct_l4'), 'true');
 select ist.val('SL38 ...a second time finds nothing live: false', format($$select public.stripe_account_deauthorized('evt_sl38', %L)::text$$, :'acct_l4'), 'false');
 select ist.val('SL39 an unknown account is false', $$select public.stripe_account_deauthorized('evt_sl39', 'acct_Nobody1')::text$$, 'false');
-select ist.val('SL40 an ENDED account is not updated (false): its id is free for another workspace, not a live link', format($$select public.stripe_account_updated('evt_sl40', %L, true)::text$$, :'acct_l4'), 'false');
+select ist.val('SL40 an ENDED account is not updated (false): its id is free for another workspace, not a live link', format($$select public.stripe_account_updated('evt_sl40', %L, true, '2026-11-18 10:03+00')::text$$, :'acct_l4'), 'false');
 reset role;
 select ist.val('SL41 the link is ended with reason deauthorized', format($$select ended_reason from public.invoice_stripe_accounts where organisation_id = %L$$, :'org_a'), 'deauthorized');
 select ist.val('SL42 the deauthorize audit row is by the tombstone (no person), {reason: deauthorized}, no acct_', format($$select count(*) || '|' || bool_and(actor_user_id = private.erased_user_id())::text || '|' || max(after::text) || '|' || bool_and(coalesce(after::text, '') not like '%%acct\_%%')::text from public.audit_events where action = 'invoice_stripe_account.ended' and organisation_id = %L and after ->> 'reason' = 'deauthorized'$$, :'org_a'), '1|true|{"reason": "deauthorized"}|true');
@@ -708,7 +721,7 @@ select ist.val('SY42 the refused call wrote no row: the rate-limited invoice hol
 -- § SW THE WEBHOOK'S WRITES (Task 4): a paid checkout, a refund, and the two
 -- account events now taking an event id. Nobody is on any session.
 -- ===========================================================================
-select ist.val('SW1 the Task 3 events that found a live link are on the ledger and the others are not (made-up account, ended link, denied calls)', $$select string_agg(id, ',' order by id) from public.stripe_events where id like 'evt\_sl%'$$, 'evt_sl34,evt_sl35a,evt_sl35c,evt_sl37');
+select ist.val('SW1 the Task 3 events that found a live link are on the ledger and the others are not (made-up account, ended link, denied calls)', $$select string_agg(id, ',' order by id) from public.stripe_events where id like 'evt\_sl%'$$, 'evt_sl15b,evt_sl34,evt_sl35a,evt_sl35c,evt_sl37');
 select count(*) as sw_fin_before from public.financial_entries where organisation_id = :'org_a' \gset
 set role service_role;
 select ist.val('SW2 a WRONG ACCOUNT (B''s live one) naming A''s invoice is a mismatch', format($$select public.record_stripe_checkout_completed('evt_sw2', %L, %L, %L, 12000, 'GBP', now())$$, :'acct_b', :'w_mm', :'pi_m'), 'mismatch');
@@ -771,12 +784,12 @@ select ist.val('SW41 the ledger holds the refund events that resolved a workspac
 
 -- ---- THE ACCOUNT EVENTS NOW CARRY AN EVENT ID --------------------------------
 set role service_role;
-select ist.val('SW42 account.updated flips charges_enabled off for a live link', format($$select public.stripe_account_updated('evt_sw42', %L, false)::text$$, :'acct_y'), 'true');
-select ist.val('SW43 THE SAME EVENT ID again with the other value is a duplicate (false) and applies nothing', format($$select public.stripe_account_updated('evt_sw42', %L, true)::text$$, :'acct_y'), 'false');
+select ist.val('SW42 account.updated flips charges_enabled off for a live link', format($$select public.stripe_account_updated('evt_sw42', %L, false, '2026-11-18 10:30+00')::text$$, :'acct_y'), 'true');
+select ist.val('SW43 THE SAME EVENT ID again with the other value is a duplicate (false) and applies nothing', format($$select public.stripe_account_updated('evt_sw42', %L, true, '2026-11-18 10:30+00')::text$$, :'acct_y'), 'false');
 reset role;
 select ist.val('SW44 ...charges_enabled is still false and the event is on the ledger once, typed account.updated', format($$select (select charges_enabled::text from public.invoice_stripe_accounts where organisation_id = %L) || '|' || (select count(*) || max(type) from public.stripe_events where id = 'evt_sw42')$$, :'org_a'), 'false|1account.updated');
 set role service_role;
-select ist.val('SW45 a NEW event id flips it back on', format($$select public.stripe_account_updated('evt_sw45', %L, true)::text$$, :'acct_y'), 'true');
+select ist.val('SW45 a NEW event id flips it back on', format($$select public.stripe_account_updated('evt_sw45', %L, true, '2026-11-18 10:45+00')::text$$, :'acct_y'), 'true');
 -- OUT OF ORDER (audit 2026-11-18, finding 3): Stripe may deliver an older event last.
 select ist.val('SW45a an event created at 12:00 turns charges off', format($$select public.stripe_account_updated('evt_sw45a', %L, false, '2026-11-18 12:00+00')::text$$, :'acct_y'), 'true');
 select ist.val('SW45b an OLDER event (11:00) delivered after it is not applied (false)', format($$select public.stripe_account_updated('evt_sw45b', %L, true, '2026-11-18 11:00+00')::text$$, :'acct_y'), 'false');
