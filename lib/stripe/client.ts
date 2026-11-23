@@ -12,6 +12,8 @@ export type StripeEvent = Stripe.Event;
 export interface CheckoutInput {
   account: string; invoiceId: string; number: string; grossMinor: number; feeMinor: number;
   successUrl: string; cancelUrl: string;
+  /** Unix seconds; Stripe accepts 30 minutes to 24 hours ahead. */
+  expiresAt: number;
   /** Same key, same session: Stripe returns the first request's session (lib/invoices/pay.ts). */
   idempotencyKey: string;
 }
@@ -58,6 +60,7 @@ class LiveStripeGateway implements StripeGateway {
         metadata: { [INVOICE_ID_METADATA_KEY]: i.invoiceId },
         success_url: i.successUrl,
         cancel_url: i.cancelUrl,
+        expires_at: i.expiresAt,
       },
       { stripeAccount: i.account, idempotencyKey: i.idempotencyKey },
     );

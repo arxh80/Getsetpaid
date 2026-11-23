@@ -47,7 +47,7 @@ describe("the live Stripe gateway", () => {
     sdk.create.mockResolvedValue({ id: "cs_live_1", url: "https://checkout.stripe.com/c/pay/cs_live_1" });
     const out = await getStripe()!.createCheckoutSession({
       account: "acct_seller", invoiceId: INVOICE, number: "INV-0007", grossMinor: 12000, feeMinor: 120,
-      successUrl: "https://app.test/ok", cancelUrl: "https://app.test/no", idempotencyKey: "checkout-abc",
+      successUrl: "https://app.test/ok", cancelUrl: "https://app.test/no", expiresAt: 1_900_000_000, idempotencyKey: "checkout-abc",
     });
     expect(INVOICE_ID_METADATA_KEY).toBe("getsetpaid_invoice_id");
     expect(sdk.create.mock.calls).toEqual([[
@@ -59,6 +59,7 @@ describe("the live Stripe gateway", () => {
         metadata: { getsetpaid_invoice_id: INVOICE },
         success_url: "https://app.test/ok",
         cancel_url: "https://app.test/no",
+        expires_at: 1_900_000_000,
       },
       { stripeAccount: "acct_seller", idempotencyKey: "checkout-abc" },
     ]]);

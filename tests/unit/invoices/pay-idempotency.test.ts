@@ -2,14 +2,29 @@
 // key (Stripe then makes one session), and anything that should be a new
 // session must change it.
 import { describe, expect, it } from "vitest";
-import { checkoutIdempotencyKey } from "@/lib/invoices/pay";
+import { checkoutExpiresAt, checkoutIdempotencyKey } from "@/lib/invoices/pay";
 
+const MINUTE = 60_000;
+const t0 = 29_000_000 * MINUTE; // the start of a minute
 const input = {
   account: "acct_seller", invoiceId: "11111111-1111-1111-1111-111111111111", number: "INV-0007",
   grossMinor: 12000, feeMinor: 120, successUrl: "https://app.test/pay/t/thanks", cancelUrl: "https://app.test/pay/t",
+  expiresAt: checkoutExpiresAt(t0),
 };
-const MINUTE = 60_000;
-const t0 = 29_000_000 * MINUTE; // the start of a minute
+
+describe("checkoutExpiresAt", () => {
+  it("is the same for every click in one minute, so a retried key sends the same body", () => {
+    expect(checkoutExpiresAt(t0)).toBe(checkoutExpiresAt(t0 + MINUTE - 1));
+  });
+
+  it("stays inside Stripe's window (30 minutes to 24 hours) from any moment in that minute", () => {
+    for (const now of [t0, t0 + MINUTE - 1]) {
+      const ahead = checkoutExpiresAt(now) - now / 1000;
+      expect(ahead).toBeGreaterThanOrEqual(30 * 60);
+      expect(ahead).toBeLessThanOrEqual(24 * 60 * 60);
+    }
+  });
+});
 
 describe("checkoutIdempotencyKey", () => {
   it("is the same for two clicks in the same minute", () => {
