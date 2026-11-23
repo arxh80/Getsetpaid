@@ -178,8 +178,9 @@ short of memory and nobody needs the logs.
 - **The `.env.development.local` in each worktree** is per-worktree already, so
   it is fine — but `pnpm dev` regenerates it every run, so a slot change takes
   effect only on the next `pnpm dev`.
-- **Slot 0.** Nothing here claims it, stops it or reconfigures it. If two
-  worktrees both decline to claim, they are back to sharing.
+- **Slot 0.** Nothing here claims it, stops it or reconfigures it. It belongs
+  to the main checkout (Archie's dev server); every worktree session claims
+  its own slot before a reset or e2e run (CLAUDE.md § Gates).
 - **Ports outside the CLI's range** that something else on the machine binds.
   `claim` checks the eight it is about to use and refuses if any is taken; it
   cannot check ports it does not know about.
@@ -255,5 +256,5 @@ pnpm test:e2e
 
 On a claimed slot, `SUPABASE_WORKDIR` must be exported for the third, fourth
 and fifth of those. On slot 0, announce the run to whoever else is on this
-machine first — the `MEMORY.md` claim/release protocol still applies to the
-shared stack, and is precisely what claiming a slot lets you stop doing.
+machine first. A worktree session should not be on slot 0 at all: claim a
+slot instead.
