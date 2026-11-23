@@ -17,6 +17,8 @@ Also read before touching their area:
 - `DESIGN.md`: tokens and the design-skill contract. Read it before any UI.
 - `.superpowers/sdd/plan-the-whole-build-synthetic-thompson/DECISIONS-QUEUE.md`: founder questions (Qnnn) and their rulings.
 
+`SECURITY.md`, `FOLLOW-UPS.md` and the decisions queue are gitignored on purpose. The SessionStart hook (`scripts/session-check.mjs`) copies any that are missing into a new worktree; `node scripts/local-docs.mjs backup` copies them out of the repo. Back them up before removing a worktree that edited them.
+
 ## Current state
 
 Phases 2–9 are shipped and merged:
@@ -57,7 +59,9 @@ Run all five before claiming a change is done:
 - Axe scans: `grep -c "await scan(\|new AxeBuilder" tests/e2e/*.spec.ts`.
 - psql: the `run_suite` pins in `run-rls-tests.sh`.
 
-**One stack per worktree** is opt-in: `pnpm stack:claim` gives a worktree its own project id and ports, and you must export `SUPABASE_WORKDIR` as it prints, or a bare `npx supabase db reset` still resets the shared stack. Recipe and the tiered-gate policy (what to run while iterating; the full five gates still gate every handback): `docs/parallel-stacks.md`.
+**One stack per worktree, always.** Before any `db reset` or e2e run in a worktree, run `pnpm stack:claim` and export `SUPABASE_WORKDIR` as it prints; a bare `npx supabase db reset` without it still resets the shared stack. Slot 0 (the main checkout) is Archie's. Another session's reset on a shared stack is what earlier "flaky container" and "stale DB" diagnoses really were. Recipe and the tiered-gate policy (what to run while iterating; the full five gates still gate every handback): `docs/parallel-stacks.md`.
+
+**Hosted Supabase applies `main`'s migrations on merge.** Check with `npx supabase migration list --remote`; never ask Archie to push. CLI v3 makes a bare `db push` target the LOCAL stack, so a hosted command needs `--remote --yes`. A bad migration reaches production on merge, so the psql CI job is the last gate.
 
 **Reproduce a red CI test locally before pushing a fix.** Run only the failing spec (`npx playwright test tests/e2e/<spec> --workers=1`) and push once it passes; a guessed fix costs a whole CI cycle. After changing auth, roles or MFA, update the integration fixtures in the same commit.
 
@@ -65,7 +69,7 @@ Run all five before claiming a change is done:
 
 **Forbidden here:** `pnpm build` / `pnpm start` in a worktree pointed at the local stack. They resolve to the **hosted** project.
 
-**Do not start the ClamAV container on this machine.** The 2 GB Docker VM cannot hold it beside Supabase, and it hung the VM once. Runbook: `docs/clamav.md`.
+**Do not start the ClamAV container on this machine.** The Docker VM (capped at 4 GB in `~/.wslconfig`) cannot hold it beside Supabase, and it hung the VM once. Runbook: `docs/clamav.md`.
 
 Skills are pinned project-level. Restore them with `npx skills experimental_install` and check for updates with `npx skills check`. The roster is in `DESIGN.md` § "Build-time design tooling".
 
@@ -81,6 +85,7 @@ Skills are pinned project-level. Restore them with `npx skills experimental_inst
 
 - **Do not stop between tasks.** Keep checking CI, merge each PR once every gate except Supabase Preview is green, then start the next task straight away.
 - **No permission needed** for anything except changes to the spec (`getsetpaid_crm_prd.docx` and founder rulings in the decisions queue). Ask about those; do everything else.
+- **Park questions, don't block.** Take the recommended default, add the question to the decisions queue as the next free Qnnn, and list the parked ones when Archie returns.
 
 ## Architecture
 
