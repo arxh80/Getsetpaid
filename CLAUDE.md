@@ -109,7 +109,7 @@ These look like gaps but are deliberate (detail in `docs/as-built.md`):
 - Note visibility is binary (`private` | `company`). A company note is editable only by its author.
 - `document_versions` is dormant (versioning is Release 1.1).
 - `documents.deleted_at` and `retention_class` are database-owned retention clocks. A client cannot write them.
-- Malware scanning: an EICAR stub when `MALWARE_SCANNER` is unset, fail-closed ClamAV (`MALWARE_SCANNER=clamav`) in production. A misconfiguration throws. It never falls back to the stub.
+- Malware scanning: an EICAR stub when `MALWARE_SCANNER` is unset. Production runs `MALWARE_SCANNER=structural` (Q286: the shared host has no room for ClamAV), which refuses active content in PDFs and Office files (`lib/security/structural-scan.ts`); fail-closed ClamAV (`clamav`) returns if the host grows. A misconfiguration throws. It never falls back to the stub.
 - Integrations (Phase 9) are **schema only**. No provider is live, so `connect_integration()` always refuses. Tokens live in Supabase Vault, and writes are RPC-only.
 - **Dedup:** only an exact, case-insensitive email match auto-merges, which means contacts only. Everything else, name included, is flagged for manual review. Every merge is audited.
 

@@ -96,7 +96,7 @@ const OOXML_MAX_ENTRIES = 10_000;
 const CONTENT_TYPES_MAX_BYTES = 1_048_576;
 
 /** One central-directory record, as far as the allowlist needs it. */
-interface ZipEntry {
+export interface ZipEntry {
   readonly name: string;
   readonly method: number;
   readonly encrypted: boolean;
@@ -109,7 +109,7 @@ interface ZipEntry {
  * truncated, ZIP64 or over `OOXML_MAX_ENTRIES`. Every offset is bounds-checked
  * against the buffer before it is read: this parses attacker-supplied bytes.
  */
-function readCentralDirectory(bytes: Uint8Array): ZipEntry[] | null {
+export function readCentralDirectory(bytes: Uint8Array): ZipEntry[] | null {
   const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   // The end record is 22 bytes plus a comment of at most 65 535.
   const floor = Math.max(0, buf.length - 22 - 0xffff);
@@ -155,7 +155,7 @@ function readCentralDirectory(bytes: Uint8Array): ZipEntry[] | null {
 }
 
 /** Inflate one entry's bytes, capped; null if it cannot be read safely. */
-function readEntry(bytes: Uint8Array, entry: ZipEntry, maxBytes: number): Buffer | null {
+export function readEntry(bytes: Uint8Array, entry: ZipEntry, maxBytes: number): Buffer | null {
   const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const lh = entry.localHeaderOffset;
   if (entry.encrypted || lh + 30 > buf.length || buf.readUInt32LE(lh) !== 0x04034b50) {

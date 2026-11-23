@@ -1,5 +1,7 @@
 # ClamAV upload scanning
 
+> **Not deployed at launch (founder Q286, 2026-11-23).** The shared VPS has 1.8 GB RAM, which cannot hold clamd beside the app. Production runs `MALWARE_SCANNER=structural` instead (`lib/security/structural-scan.ts`): it refuses JavaScript, launch actions and embedded files in PDFs, and OLE embeddings and external templates in Office files. It has no signature engine, so a file exploiting a viewer bug with no active content is not caught. This runbook applies again once the host has about 1.5 GB to spare for clamd.
+
 Founder decision Q42 (2026-10-13): every upload is scanned by a **self-hosted
 ClamAV** daemon. It is free, open source, and runs on our own server, so no
 customer file ever leaves the UK/EU region. Free SaaS tiers were rejected:
@@ -31,7 +33,7 @@ file.** Both upload actions (`lib/crm/documents.ts`,
 
 | Variable | Value | Default |
 |---|---|---|
-| `MALWARE_SCANNER` | `clamav` in every deployed environment | dev/test: `stub` (EICAR-only); `NODE_ENV=production`: every scan fails closed |
+| `MALWARE_SCANNER` | `clamav` when this runbook applies; `structural` until then (Q286) | dev/test: `stub` (EICAR-only); `NODE_ENV=production`: every scan fails closed |
 | `CLAMAV_HOST` | the clamd host | — (required; missing ⇒ every scan fails closed) |
 | `CLAMAV_PORT` | clamd TCP port | `3310` |
 | `CLAMAV_TIMEOUT_MS` | whole-scan deadline | `30000` |
