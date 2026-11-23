@@ -1533,7 +1533,7 @@ fi
 race_user=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -tAc \
   "insert into auth.users (id, instance_id, aud, role, email)
    values (gen_random_uuid(), '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
-           'consent-race-' || gen_random_uuid() || '@test.local') returning id" | head -1 | tr -d '[:space:]')
+           'consent-race-' || gen_random_uuid() || '@test.local') returning id" | sed -n 1p | tr -d '[:space:]')
 race_claims="{\"sub\":\"$race_user\",\"role\":\"authenticated\"}"
 race_ver=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
   "select version from public.legal_documents where slug='marketing-preferences' and status='published'" \
@@ -2152,7 +2152,7 @@ p2_range_shape() { # name want(rows|none) METHOD path body token
       -H "apikey: $ANON" -H "Authorization: Bearer $tok"
       -H "Content-Type: application/json")
   [ -n "$body" ] && args+=(-d "$body")
-  cr=$(curl "${args[@]}" | tr -d '\r' | grep -i '^content-range:' | head -1 \
+  cr=$(curl "${args[@]}" | tr -d '\r' | grep -i '^content-range:' | sed -n 1p \
        | sed 's/^[Cc]ontent-[Rr]ange:[[:space:]]*//' || true)
   half="${cr%%/*}"
   if [ "$half" = "*" ]; then got=none; else got=rows; fi
@@ -2168,7 +2168,7 @@ p2_range_written() { # name want_total METHOD path body token -- count=exact
       -H "apikey: $ANON" -H "Authorization: Bearer $tok"
       -H "Content-Type: application/json" -H "Prefer: count=exact")
   [ -n "$body" ] && args+=(-d "$body")
-  cr=$(curl "${args[@]}" | tr -d '\r' | grep -i '^content-range:' | head -1 \
+  cr=$(curl "${args[@]}" | tr -d '\r' | grep -i '^content-range:' | sed -n 1p \
        | sed 's/^[Cc]ontent-[Rr]ange:[[:space:]]*//' || true)
   n="${cr##*/}"
   if [ "$want" = ">=1" ]; then
@@ -3844,24 +3844,24 @@ p2_sub "insert into public.organisation_memberships
         do update set role = 'manager', status = 'active';"
 
 ALPHA_H4_CO=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-  "insert into public.companies (organisation_id, name) values ('$ALPHA_ORG','Task4 HTTP Alpha Co') returning id" | head -n1 | tr -d '[:space:]')
+  "insert into public.companies (organisation_id, name) values ('$ALPHA_ORG','Task4 HTTP Alpha Co') returning id" | sed -n 1p | tr -d '[:space:]')
 BETA_H4_CO=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-  "insert into public.companies (organisation_id, name) values ('$BETA_ORG','Task4 HTTP Beta Co') returning id" | head -n1 | tr -d '[:space:]')
+  "insert into public.companies (organisation_id, name) values ('$BETA_ORG','Task4 HTTP Beta Co') returning id" | sed -n 1p | tr -d '[:space:]')
 ALPHA_H4_PROFILE=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
   "insert into public.network_profiles
      (organisation_id, entity_kind, entity_id, status, display_name, field_visibility, published_at)
    values ('$ALPHA_ORG','company','$ALPHA_H4_CO','published','Task4 HTTP Alpha Co','{}'::jsonb, now())
-   returning id" | head -n1 | tr -d '[:space:]')
+   returning id" | sed -n 1p | tr -d '[:space:]')
 BETA_H4_PROFILE=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
   "insert into public.network_profiles
      (organisation_id, entity_kind, entity_id, status, display_name, field_visibility, published_at)
    values ('$BETA_ORG','company','$BETA_H4_CO','published','Task4 HTTP Beta Co','{}'::jsonb, now())
-   returning id" | head -n1 | tr -d '[:space:]')
+   returning id" | sed -n 1p | tr -d '[:space:]')
 H4_REQUEST=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
   "insert into public.network_connection_requests
      (from_organisation_id, from_network_profile_id, to_organisation_id, to_network_profile_id)
    values ('$ALPHA_ORG','$ALPHA_H4_PROFILE','$BETA_ORG','$BETA_H4_PROFILE')
-   returning id" | head -n1 | tr -d '[:space:]')
+   returning id" | sed -n 1p | tr -d '[:space:]')
 
 BETA_MGR=$(p2_token2 pstd2); [ -n "$BETA_MGR" ] || { echo "no token for pstd2 (BETA manager)" >&2; exit 1; }
 
@@ -4283,7 +4283,7 @@ GAMMA_C1_PROFILE=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d pos
   "insert into public.network_profiles
      (organisation_id, entity_kind, entity_id, status, display_name, field_visibility, published_at)
    values ('$GAMMA_ORG','company',gen_random_uuid(),'published','C1 HTTP Gamma Co','{}'::jsonb, now())
-   returning id" | head -n1 | tr -d '[:space:]')
+   returning id" | sed -n 1p | tr -d '[:space:]')
 # Sending needs network_publish on GAMMA and accepting needs it on ALPHA. Both
 # are planted without a subscription row, which is Free since 20261120002000,
 # so both get the Starter row every real workspace is born with.
