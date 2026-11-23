@@ -183,6 +183,27 @@ describe("startCardPayment", () => {
     create.mockRestore();
   });
 
+  it("two clicks at once hand Stripe the same idempotency key, so Stripe makes one session", async () => {
+    // Both begins finish before either create returns, so neither sees the
+    // other's stamp: the case the earlier-session check alone cannot catch.
+    // Date.now is held so the two cannot straddle a minute boundary.
+    const fixed = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(fixed);
+    const create = vi.spyOn(FakeStripeGateway.prototype, "createCheckoutSession").mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+      return { id: "cs_fake_once", url: "https://checkout.stripe.test/c/pay/cs_fake_once" };
+    });
+    const t = tok(issued);
+    const [a, b] = await Promise.all([startCardPayment(t, ORIGIN), startCardPayment(t, ORIGIN)]);
+    expect(create).toHaveBeenCalledTimes(2);
+    const [first, second] = create.mock.calls.map(([i]) => i.idempotencyKey);
+    expect(first).toMatch(/^checkout-/);
+    expect(second).toBe(first);
+    expect(a).toEqual(b);
+    create.mockRestore();
+    clock.mockRestore();
+  });
+
   it("an unlinked invoice and a tampered token are refused", async () => {
     expect(await startCardPayment(tok(unlinked), ORIGIN)).toEqual({ kind: "refused", sellerName: "Pay Beta Ltd" });
     expect(await startCardPayment(tok(issued) + "x", ORIGIN)).toEqual({ kind: "refused", sellerName: null });
