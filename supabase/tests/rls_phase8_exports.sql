@@ -116,6 +116,9 @@ select gen_random_uuid()::text as ghost \gset
 \o
 \set anon_c '{"role":"anon"}'
 \set svc_c '{"role":"service_role"}'
+-- The same two people with a password only: a workspace archive is aal2's.
+select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'powner') as powner_c1 \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'pstd1')  as pstd1_c1  \gset
 
 -- ===========================================================================
 -- § XF  FIXTURES
@@ -481,12 +484,20 @@ set request.jwt.claims = :'powner_c';
 select xp.val('XR1 the Owner reads their own workspace job (positive control)',
   format($$select count(*)::text from public.export_jobs where organisation_id = %L$$, :'alpha_org'), '1');
 
+set request.jwt.claims = :'powner_c1';
+select xp.val('XR1a ...but the same Owner at aal1 reads ZERO of it -- a workspace archive is aal2''s',
+  format($$select count(*)::text from public.export_jobs where organisation_id = %L$$, :'alpha_org'), '0');
+
 set request.jwt.claims = :'padmin_c';
 select xp.val('XR2 a second ADMIN of the same workspace reads ZERO of it -- an archive is one person''s snapshot',
   format($$select count(*)::text from public.export_jobs where organisation_id = %L$$, :'alpha_org'), '0');
 
 set request.jwt.claims = :'pstd1_c';
 select xp.val('XR3 a Standard User reads their own account job and nothing else',
+  $$select count(*)::text from public.export_jobs$$, '1');
+
+set request.jwt.claims = :'pstd1_c1';
+select xp.val('XR3a ...and still reads their own ACCOUNT job at aal1: the statutory copy needs no MFA',
   $$select count(*)::text from public.export_jobs$$, '1');
 
 set request.jwt.claims = :'super_c';
@@ -833,6 +844,11 @@ set request.jwt.claims = :'powner_c';
 select xp.try_hint('XD1 the requester''s own download is audited',
   format($$select public.audit_export_download(%L)$$, :'alpha_job'), 'ok');
 
+set request.jwt.claims = :'powner_c1';
+select xp.try_hint('XD1a ...but the same requester at aal1 gets a stranger''s answer for the workspace archive',
+  format($$select public.audit_export_download(%L)$$, :'alpha_job'),
+  'denied(42501:not_your_export)');
+
 set request.jwt.claims = :'padmin_c';
 select xp.try_hint('XD2 IDOR: another Admin of the same workspace cannot audit-and-download it',
   format($$select public.audit_export_download(%L)$$, :'alpha_job'),
@@ -843,6 +859,10 @@ select xp.try_hint('XD3 IDOR: an unrelated user cannot either',
   format($$select public.audit_export_download(%L)$$, :'alpha_job'),
   'denied(42501:not_your_export)');
 select xp.try_hint('XD4 ...and their own job has no archive yet, which is its own refusal',
+  format($$select public.audit_export_download(%L)$$, :'std_job'),
+  'denied(22023:export_has_no_archive)');
+set request.jwt.claims = :'pstd1_c1';
+select xp.try_hint('XD4a ...and at aal1 the ACCOUNT job still passes the ownership and assurance gate',
   format($$select public.audit_export_download(%L)$$, :'std_job'),
   'denied(22023:export_has_no_archive)');
 

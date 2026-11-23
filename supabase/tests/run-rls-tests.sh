@@ -1038,7 +1038,7 @@ fi
 # the real catalogue.
 # ============================================================================
 
-run_suite "PHASE 8 EXPORTS" rls_phase8_exports.sql xp 139 "${P7VARS[@]}"
+run_suite "PHASE 8 EXPORTS" rls_phase8_exports.sql xp 143 "${P7VARS[@]}"
 exp_fails=$SUITE_FAILS
 if [ "$exp_fails" != "0" ]; then
   echo "PHASE 8 EXPORT SUITE FAILED: $exp_fails failing assertion(s)" >&2
@@ -1344,7 +1344,7 @@ fi
 # kept one. Self-contained and re-runnable
 # on one database (it removes its own fixtures).
 # ============================================================================
-run_suite "Q228 CLOSURE BACKUP PARTS" rls_q228_closure_backup_parts.sql qp 119
+run_suite "Q228 CLOSURE BACKUP PARTS" rls_q228_closure_backup_parts.sql qp 123
 qp_fails=$SUITE_FAILS
 if [ "$qp_fails" != "0" ]; then
   echo "Q228 CLOSURE BACKUP PARTS SUITE FAILED: $qp_fails failing assertion(s)" >&2

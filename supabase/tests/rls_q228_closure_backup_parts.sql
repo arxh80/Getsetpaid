@@ -178,6 +178,9 @@ select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_s')  a
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_t')  as owner_t_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'admin_s2') as admin_s2_c \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'su_u')     as su_c       \gset
+-- Password-only sessions of two requesters, for § QD's assurance gate.
+select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'owner_p')  as owner_p_c1 \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'owner_s')  as owner_s_c1 \gset
 \o
 
 insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
@@ -878,6 +881,9 @@ select qp.sc('QD2 ...part 2 succeeds, with after.part = 2',
 select qp.sc('QD3 Owner P''s ordinary account export K, no part: after.part = 1',
   qp.as_person(:'owner_p_c') || array[qp.dl(:'k', null), format($$select qp.last_dl(%L)$$, :'k')],
   'true|ok|called|kind,part/account/1');
+select qp.sc('QD3b ...and K downloads at aal1 too: an account export is the statutory copy and needs no MFA',
+  qp.as_person(:'owner_p_c1') || array[qp.dl(:'k', null), format($$select qp.last_dl(%L)$$, :'k')],
+  'true|ok|called|kind,part/account/1');
 
 select qp.dl_count(array[:'j3', :'k', :'f']::uuid[]) as qd_before \gset
 set role authenticated;
@@ -894,6 +900,18 @@ select qp.try('QD4e Owner P''s ordinary K, part 2 (an ordinary export has no par
 set request.jwt.claims = :'admin_s2_c';
 select qp.try('QD5 Admin S2 of the SAME workspace, J3 part 2: not_your_export (the IDOR term, not the part check)',
   qp.dl(:'j3', 2), 'denied(42501:not_your_export)');
+set request.jwt.claims = :'owner_s_c';
+select qp.val('QD5c POSITIVE CONTROL: Owner S at aal2 reads J3 and its three parts',
+  format($$select (select count(*) from public.export_jobs where id = %L)::text || '/' ||
+                  (select count(*) from public.export_job_parts where job_id = %L)::text$$, :'j3', :'j3'),
+  '1/3');
+set request.jwt.claims = :'owner_s_c1';
+select qp.try('QD5b Owner S at aal1, J3 part 2: not_your_export (a workspace backup is aal2''s; QD2 is the control)',
+  qp.dl(:'j3', 2), 'denied(42501:not_your_export)');
+select qp.val('QD5d ...and at aal1 reads neither J3 nor any of its parts',
+  format($$select (select count(*) from public.export_jobs where id = %L)::text || '/' ||
+                  (select count(*) from public.export_job_parts where job_id = %L)::text$$, :'j3', :'j3'),
+  '0/0');
 reset role;
 reset request.jwt.claims;
 select qp.sc('QD6a an EXPIRED J3 (undone): export_archive_expired',
