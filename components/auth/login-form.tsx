@@ -7,6 +7,7 @@ import { EMPTY_FORM_STATE } from "@/lib/forms";
 import { Field } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
+import { Turnstile } from "./turnstile";
 import { PasswordInput } from "./password-input";
 
 // Sign-in form.
@@ -48,6 +49,8 @@ export function LoginForm({ next }: { next: string }) {
         required
         error={state.fieldErrors?.password}
       />
+
+      <Turnstile resetKey={state} />
 
       <Button type="submit" pending={pending} pendingLabel="Signing in…">
         Sign in

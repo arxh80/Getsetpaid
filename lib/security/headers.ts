@@ -99,6 +99,15 @@
 //     opens a Realtime socket if any code ever subscribes; nothing does yet,
 //     but the origin is the same one already trusted for HTTP.
 //
+//   script-src and frame-src name https://challenges.cloudflare.com, only
+//   when NEXT_PUBLIC_TURNSTILE_SITE_KEY is set
+//     The Turnstile check on the auth forms (components/auth/turnstile.tsx)
+//     loads api.js from there and renders its challenge in an iframe from
+//     there; those two directives are what Cloudflare documents. Under
+//     'strict-dynamic' the script host is only the CSP2 fallback (a CSP3
+//     browser trusts the nonced insert). With no site key the widget never
+//     renders and the policy names neither.
+//
 //   'unsafe-eval', in DEVELOPMENT ONLY
 //     React Fast Refresh needs it. It is gated on NODE_ENV and never present
 //     in a production build -- verified by reading the actual response headers
@@ -107,7 +116,7 @@
 //
 // And what it refuses: object-src 'none' (no Flash/applet vectors),
 // frame-ancestors 'none' (the clickjacking fix), frame-src 'none' (the app
-// embeds nothing), base-uri 'self' (a <base> injection cannot re-point every
+// embeds nothing but the Turnstile frame above), base-uri 'self' (a <base> injection cannot re-point every
 // relative URL at an attacker's host), default-src 'self' as the catch-all.
 
 /** Origin of the Supabase project, for connect-src/form-action. */
@@ -119,6 +128,11 @@ function supabaseOrigin(): string | null {
   } catch {
     return null;
   }
+}
+
+/** Turnstile's origin, or null while no site key is configured. */
+function turnstileOrigin(): string | null {
+  return process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ? "https://challenges.cloudflare.com" : null;
 }
 
 /**
@@ -208,6 +222,7 @@ export function contentSecurityPolicy(nonce: string): string {
   const supabase = supabaseOrigin();
   const supabaseWs = supabase ? supabase.replace(/^http/, "ws") : null;
   const isDev = process.env.NODE_ENV !== "production";
+  const turnstile = turnstileOrigin();
 
   const connect = ["'self'", supabase, supabaseWs].filter(Boolean).join(" ");
   const form = [
@@ -222,7 +237,7 @@ export function contentSecurityPolicy(nonce: string): string {
 
   const directives = [
     "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ""}`,
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${turnstile ? ` ${turnstile}` : ""}${isDev ? " 'unsafe-eval'" : ""}`,
     // See the header note: the single broad allowance, and why.
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
@@ -230,7 +245,7 @@ export function contentSecurityPolicy(nonce: string): string {
     `connect-src ${connect}`,
     `form-action ${form}`,
     "frame-ancestors 'none'",
-    "frame-src 'none'",
+    turnstile ? `frame-src ${turnstile}` : "frame-src 'none'",
     "object-src 'none'",
     "base-uri 'self'",
     "worker-src 'self' blob:",

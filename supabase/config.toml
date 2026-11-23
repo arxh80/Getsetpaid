@@ -272,11 +272,17 @@ token_verifications = 30
 # Number of Web3 logins that can be made in a 5 minute interval per IP address.
 web3 = 30
 
-# Configure one of the supported captcha providers: `hcaptcha`, `turnstile`.
+# Cloudflare Turnstile on sign-up, password sign-in, magic link and the
+# step-up password check (components/auth/turnstile.tsx, lib/auth/captcha.ts).
+# OFF here on purpose: enabled, GoTrue would demand a token on every test
+# sign-in and sign-up, and local, CI and e2e run without a widget. The hosted
+# project turns it on in the dashboard (Auth > Bot and Abuse Protection >
+# Turnstile, with the widget's secret key), alongside
+# NEXT_PUBLIC_TURNSTILE_SITE_KEY on the app host: docs/runbooks/cloudflare.md.
 # [auth.captcha]
 # enabled = true
-# provider = "hcaptcha"
-# secret = ""
+# provider = "turnstile"
+# secret = "env(TURNSTILE_SECRET_KEY)"
 
 [auth.email]
 # Allow/disallow sign-in and sign-up via email (v3 renamed enable_signup to enabled).

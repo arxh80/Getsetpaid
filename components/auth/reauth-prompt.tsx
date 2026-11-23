@@ -7,6 +7,7 @@ import { EMPTY_FORM_STATE } from "@/lib/forms";
 import { Field } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
+import { Turnstile } from "./turnstile";
 
 /**
  * The re-auth prompt components/auth/step-up-gate.tsx renders whenever
@@ -70,14 +71,18 @@ export function ReauthPrompt({
               />
             </>
           ) : (
-            <Field
-              label="Password"
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              error={state.fieldErrors?.password}
-            />
+            <>
+              <Field
+                label="Password"
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                error={state.fieldErrors?.password}
+              />
+              {/* Only the password path reaches GoTrue's captcha-checked sign-in. */}
+              <Turnstile resetKey={state} />
+            </>
           )}
 
           <Button type="submit" pending={pending} pendingLabel="Checking…">

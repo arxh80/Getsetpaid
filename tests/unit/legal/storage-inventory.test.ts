@@ -19,8 +19,8 @@ const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const names = BROWSER_STORAGE.map((item) => item.name);
 
 describe("the Cookie Policy's storage list matches the code", () => {
-  it("declares exactly five items, all strictly necessary and all first-party (Q129)", () => {
-    expect(BROWSER_STORAGE).toHaveLength(5);
+  it("declares exactly six items, all strictly necessary and all set for GetSetPaid (Q129)", () => {
+    expect(BROWSER_STORAGE).toHaveLength(6);
     for (const item of BROWSER_STORAGE) {
       expect(item.setBy).toMatch(/^GetSetPaid/);
       expect(item.necessity.length).toBeGreaterThan(10);
@@ -52,6 +52,15 @@ describe("the Cookie Policy's storage list matches the code", () => {
   it("names the idle-timeout key by the scheme activityStorageKey() uses", () => {
     const placeholder = "<your account id>";
     expect(names).toContain(activityStorageKey(placeholder));
+  });
+
+  it("names Cloudflare's security-check cookies, which the Turnstile widget brings in", () => {
+    const src = readFileSync(`${ROOT}components/auth/turnstile.tsx`, "utf8");
+    expect(src).toContain('"https://challenges.cloudflare.com/turnstile/v0/api.js');
+    const item = BROWSER_STORAGE.find((i) => i.setBy.includes("Cloudflare"));
+    expect(item?.kind).toBe("cookie");
+    for (const name of ["cf_clearance", "__cf_bm"]) expect(item?.matches.test(name), name).toBe(true);
+    expect(item?.matches.test("_cfuvid")).toBe(false);
   });
 
   it("names the sidebar key by its real name", () => {

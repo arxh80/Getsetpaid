@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import ts from "typescript";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BROWSER_STORAGE } from "@/lib/legal/storage-inventory";
 import { CURRENT_ORG_COOKIE } from "@/lib/org/current-org";
 import { activityStorageKey } from "@/lib/auth/idle-timeout";
@@ -88,6 +88,7 @@ function scanTree(): Site[] {
 // ===========================================================================
 
 const SUPABASE_ITEM = BROWSER_STORAGE[0].name;
+const CLOUDFLARE_ITEM = BROWSER_STORAGE.find((i) => i.setBy.includes("Cloudflare"))!.name;
 
 interface DeclaredSite {
   file: string;
@@ -170,6 +171,15 @@ const DECLARED: readonly DeclaredSite[] = [
     covers: activityStorageKey("<your account id>"),
     keys: ["storageKey"],
     why: "the cross-tab idle timer (storageKey = activityStorageKey(userId))",
+  },
+  {
+    file: "components/auth/turnstile.tsx",
+    kind: "third-party",
+    count: 2,
+    covers: CLOUDFLARE_ITEM,
+    why:
+      "the Turnstile loader on the auth forms (createElement + src): a strictly necessary security " +
+      "check, Cloudflare is in docs/sub-processors.md, and it loads only when a site key is set",
   },
   // ---- server-only sites: they set nothing in a browser ----------------------
   {
@@ -550,9 +560,13 @@ describe("the storage census (Phase 8 Task 2, Q129)", () => {
   // directive at all. So this is NOT "scripts load only from this origin": it
   // is "the policy names no third-party script, frame or image host", and the
   // source scan above is what stops trusted code from inserting one. Whether
-  // 'strict-dynamic' should stay is DECISIONS-QUEUE Q155.
+  // 'strict-dynamic' should stay is DECISIONS-QUEUE Q155. The one named
+  // exception is Turnstile, present only with a site key and pinned in
+  // tests/unit/security/headers.test.ts; this checks the policy without it.
   it("the Content-Security-Policy names no third-party script, frame or image host (not: blocks one)", () => {
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "");
     const csp = contentSecurityPolicy("census-nonce");
+    vi.unstubAllEnvs();
     const directive = (name: string) =>
       csp.split(";").map((d) => d.trim()).find((d) => d.startsWith(`${name} `)) ?? "";
     expect(directive("script-src")).toBeTruthy();

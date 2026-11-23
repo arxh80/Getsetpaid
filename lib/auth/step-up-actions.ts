@@ -12,6 +12,7 @@ import { getCurrentUser } from "./index";
 import { mfaErrorMessage } from "./mfa-errors";
 import { safeNextPath } from "./redirects";
 import { mayTryPassword, recordPasswordOutcome } from "./login-budget";
+import { CAPTCHA_FAILED, captchaToken, isCaptchaFailure } from "./captcha";
 import { field, type FormState } from "@/lib/forms";
 
 export async function reauthenticateAction(
@@ -72,8 +73,10 @@ export async function reauthenticateAction(
   const { error } = await supabase.auth.signInWithPassword({
     email: user.email,
     password,
+    options: { captchaToken: captchaToken(formData) },
   });
   await recordPasswordOutcome(user.email, error);
+  if (isCaptchaFailure(error)) return { error: CAPTCHA_FAILED };
 
   if (error) {
     // Same one-message rule as signInAction: never confirm or deny which

@@ -6,6 +6,7 @@ import { EMPTY_FORM_STATE, MIN_PASSWORD_LENGTH } from "@/lib/forms";
 import { Field } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
+import { Turnstile } from "./turnstile";
 import { PasswordInput } from "./password-input";
 
 export function SignupForm({ next }: { next: string }) {
@@ -54,6 +55,8 @@ export function SignupForm({ next }: { next: string }) {
         required
         error={state.fieldErrors?.password}
       />
+
+      <Turnstile resetKey={state} />
 
       <Button type="submit" pending={pending} pendingLabel="Creating account…">
         Create account
