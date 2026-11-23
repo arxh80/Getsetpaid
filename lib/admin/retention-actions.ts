@@ -34,7 +34,6 @@ const MAX_REASON = 500;
 
 async function authorise(
   formData: FormData,
-  { dryRun }: { dryRun: boolean },
 ): Promise<{ ok: true } | { ok: false; state: FormState }> {
   // Server actions are public endpoints; everything is untrusted. The RPC's
   // own private.has_platform_permission() and the tables' policies are the
@@ -44,11 +43,10 @@ async function authorise(
   if (!(await getCurrentUser()) || !(await isSuperuser())) {
     return { ok: false, state: { error: FAILED_MESSAGE, values: {} } };
   }
-  // The two switches' RPCs consume a database token (G13); the dry run's
-  // only write is the runner's own service-role call, so it mints none.
-  const stepUp = dryRun
-    ? await checkStepUp()
-    : (await checkStepUp()) && (await mintStepUpToken("retention_settings"));
+  // The switches' RPCs spend this token. The dry run spends none, but minting
+  // still runs the database's half of step-up (server mark, an established
+  // factor), which the app-side freshness check alone does not.
+  const stepUp = (await checkStepUp()) && (await mintStepUpToken("retention_settings"));
   if (!stepUp) {
     return {
       ok: false,
@@ -62,7 +60,7 @@ export async function setRetentionEnabledAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const gate = await authorise(formData, { dryRun: false });
+  const gate = await authorise(formData);
   if (!gate.ok) return gate.state;
 
   // BOTH SWITCHES ARE SENT ON EVERY SUBMIT, because the RPC requires both:
@@ -110,7 +108,7 @@ export async function previewRetentionRunAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const gate = await authorise(formData, { dryRun: true });
+  const gate = await authorise(formData);
   if (!gate.ok) return gate.state;
 
   // `dry: true` all the way down: start_retention_run() records the mode on
@@ -179,7 +177,7 @@ export async function releaseAuditCeilingAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const gate = await authorise(formData, { dryRun: false });
+  const gate = await authorise(formData);
   if (!gate.ok) return gate.state;
 
   const reason = String(formData.get("reason") ?? "").trim();

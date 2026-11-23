@@ -30,10 +30,6 @@ const UNMINTED: Record<string, { readonly count: number; readonly why: string }>
     count: 1,
     why: "decides whether to RENDER the re-auth prompt; writes nothing",
   },
-  "lib/admin/retention-actions.ts": {
-    count: 1,
-    why: "previewRetentionRunAction's dry run: its only write is the runner's own service-role call, with no PostgREST path to gate",
-  },
 };
 
 const PAIRED =
