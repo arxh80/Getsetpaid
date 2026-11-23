@@ -1276,6 +1276,80 @@ select harness.try_hint('WC4 ...and one that owns FIVE is refused workspace_limi
     end $d$ $q$, :'carol', :'carol_c'), 'denied(22023:workspace_limit_reached)');
 reset role; reset request.jwt.claims;
 
+-- The cap survives the caller shedding her Owner membership (20261123001000).
+-- A just-created workspace is empty, so its sole Owner may demote herself or
+-- delete her own row; the count also reads the organisation.created audit
+-- row, which she cannot touch. WC5 proves both escapes really happen, so WC6
+-- and WC7 refuse because of the count and not for lack of a working escape.
+set role authenticated;
+set request.jwt.claims = :'carol_c';
+select harness.try('WC5 CONTROL: the sole Owner of a just-created workspace CAN demote herself, and CAN delete her own row (rolled back)',
+  $q$do $d$ declare v_id uuid; begin
+      v_id := public.create_organisation('Shed One','wc-shed-one');
+      update public.organisation_memberships set role = 'admin'
+       where organisation_id = v_id and user_id = (select auth.uid());
+      if not found then raise exception 'demotion refused' using errcode = 'P0097'; end if;
+      v_id := public.create_organisation('Shed Two','wc-shed-two');
+      delete from public.organisation_memberships
+       where organisation_id = v_id and user_id = (select auth.uid());
+      if not found then raise exception 'delete refused' using errcode = 'P0096'; end if;
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$ $q$, 'denied(P0098)');
+select harness.try_hint('WC6 create-then-demote THREE times, and the FOURTH in that hour is still refused workspace_rate_limited',
+  $q$do $d$ declare v_id uuid; i integer; begin
+      for i in 1..3 loop
+        v_id := public.create_organisation('Demote ' || i, 'wc-demote-' || i);
+        update public.organisation_memberships set role = 'admin'
+         where organisation_id = v_id and user_id = (select auth.uid());
+        if not found then raise exception 'demotion refused' using errcode = 'P0097'; end if;
+      end loop;
+      perform public.create_organisation('Demote Four','wc-demote-4');
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$ $q$, 'denied(PT429:workspace_rate_limited)');
+select harness.try_hint('WC7 create-then-delete-own-row THREE times, and the FOURTH in that hour is still refused workspace_rate_limited',
+  $q$do $d$ declare v_id uuid; i integer; begin
+      for i in 1..3 loop
+        v_id := public.create_organisation('Leave ' || i, 'wc-leave-' || i);
+        delete from public.organisation_memberships
+         where organisation_id = v_id and user_id = (select auth.uid());
+        if not found then raise exception 'delete refused' using errcode = 'P0096'; end if;
+      end loop;
+      perform public.create_organisation('Leave Four','wc-leave-4');
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$ $q$, 'denied(PT429:workspace_rate_limited)');
+reset role; reset request.jwt.claims;
+-- The account cap on creation records alone, the hour out of the way:
+-- workspaces carol created two hours ago and holds no membership of.
+select harness.try('WC8 CONTROL: an account that CREATED four workspaces (no memberships left) may create a fifth (rolled back)',
+  format($q$do $d$
+    declare v_id uuid; i integer;
+    begin
+      for i in 1..4 loop
+        insert into public.organisations (name, slug) values ('Shed Old ' || i, 'wc-shed-old-' || i) returning id into v_id;
+        insert into public.audit_events (organisation_id, actor_user_id, action, target_type, target_id, correlation_id, created_at)
+        values (v_id, %L, 'organisation.created', 'organisation', v_id, gen_random_uuid(), now() - interval '2 hours');
+      end loop;
+      perform set_config('request.jwt.claims', %L, true);
+      execute 'set local role authenticated';
+      perform public.create_organisation('Shed Fifth','wc-shed-fifth');
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$ $q$, :'carol', :'carol_c'), 'denied(P0098)');
+select harness.try_hint('WC9 ...and one that CREATED five is refused workspace_limit_reached, though she owns none of them',
+  format($q$do $d$
+    declare v_id uuid; i integer;
+    begin
+      for i in 1..5 loop
+        insert into public.organisations (name, slug) values ('Shed Old ' || i, 'wc-shed-old-' || i) returning id into v_id;
+        insert into public.audit_events (organisation_id, actor_user_id, action, target_type, target_id, correlation_id, created_at)
+        values (v_id, %L, 'organisation.created', 'organisation', v_id, gen_random_uuid(), now() - interval '2 hours');
+      end loop;
+      perform set_config('request.jwt.claims', %L, true);
+      execute 'set local role authenticated';
+      perform public.create_organisation('Shed Sixth','wc-shed-sixth');
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$ $q$, :'carol', :'carol_c'), 'denied(22023:workspace_limit_reached)');
+reset role; reset request.jwt.claims;
+
 set role authenticated;
 set request.jwt.claims = :'alice_c';
 select harness.val('W8  DENOMINATOR: alice (Owner, aal2) can read org-a, whose slug she may change',
