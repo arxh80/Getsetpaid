@@ -8,8 +8,16 @@ import { INVOICE_ID_METADATA_KEY } from "@/lib/stripe/metadata";
 // fee, amount and currency, the metadata key the webhook reads, and no retry on
 // the OAuth exchange (a second use of a code revokes the connection).
 const sdk = vi.hoisted(() => ({ ctor: vi.fn(), create: vi.fn(), retrieve: vi.fn(), token: vi.fn(), deauthorize: vi.fn() }));
+const { StripeError } = vi.hoisted(() => ({
+  StripeError: class extends Error {
+    constructor(readonly code?: string) {
+      super(code);
+    }
+  },
+}));
 vi.mock("stripe", () => ({
   default: class {
+    static errors = { StripeError };
     checkout = { sessions: { create: sdk.create, retrieve: sdk.retrieve } };
     oauth = { token: sdk.token, deauthorize: sdk.deauthorize };
     constructor(...args: unknown[]) {
@@ -65,6 +73,17 @@ describe("the live Stripe gateway", () => {
     expect(sdk.retrieve.mock.calls).toEqual([["cs_live_1", {}, { stripeAccount: "acct_seller" }]]);
     sdk.retrieve.mockResolvedValue({ status: null, url: null });
     await expect(getStripe()!.checkoutSession("acct_seller", "cs_live_1")).resolves.toEqual({ status: "expired", url: null });
+  });
+
+  it("reads a session Stripe does not have as null, and rethrows every other failure", async () => {
+    sdk.retrieve.mockRejectedValue(new StripeError("resource_missing"));
+    await expect(getStripe()!.checkoutSession("acct_seller", "cs_gone")).resolves.toBeNull();
+    const outage = new StripeError(undefined);
+    sdk.retrieve.mockRejectedValue(outage);
+    await expect(getStripe()!.checkoutSession("acct_seller", "cs_live_1")).rejects.toBe(outage);
+    const network = new TypeError("fetch failed");
+    sdk.retrieve.mockRejectedValue(network);
+    await expect(getStripe()!.checkoutSession("acct_seller", "cs_live_1")).rejects.toBe(network);
   });
 
   it("exchanges the OAuth code once, with retries off for that one call", async () => {

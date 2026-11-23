@@ -31,7 +31,7 @@ export class FakeStripeGateway implements StripeGateway {
     const id = `cs_fake_${i.invoiceId.replaceAll("-", "")}`;
     return { id, url: `https://checkout.stripe.test/c/pay/${id}` };
   }
-  async checkoutSession(account: string, id: string): Promise<CheckoutSessionState> {
+  async checkoutSession(account: string, id: string): Promise<CheckoutSessionState | null> {
     void account;
     void id; // the fake keeps no sessions: an earlier one reads as expired, so each click mints a new one
     return { status: "expired", url: null };

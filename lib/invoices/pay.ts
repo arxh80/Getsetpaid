@@ -87,16 +87,21 @@ export async function startCardPayment(token: string, origin: string): Promise<S
   if (!row) return { kind: "unavailable" };
 
   // One payable session at a time: a second click or tab goes back to the
-  // open one, so the payer cannot pay twice. A session Stripe cannot find (an
-  // account relinked since) is logged and a new one is made.
+  // open one, so the payer cannot pay twice. Only a session Stripe says it
+  // does not have (an account relinked since) is replaced; any other failure
+  // to read it is a try-again, since that session may still be open and
+  // payable, and a second one beside it is how a payer pays twice.
   if (row.previous_stripe_session_id) {
+    let previous;
     try {
-      const previous = await gateway.checkoutSession(row.account, row.previous_stripe_session_id);
-      if (previous.status === "complete") return { kind: "already_paid" };
-      if (previous.status === "open" && previous.url) return { kind: "redirect", url: previous.url };
+      previous = await gateway.checkoutSession(row.account, row.previous_stripe_session_id);
     } catch (e) {
       console.error("[pay] the earlier Checkout Session could not be read:", e instanceof Error ? e.message : "unknown");
+      return { kind: "unavailable" };
     }
+    if (!previous) console.error("[pay] Stripe has no earlier Checkout Session on this account; making a new one");
+    else if (previous.status === "complete") return { kind: "already_paid" };
+    else if (previous.status === "open" && previous.url) return { kind: "redirect", url: previous.url };
   }
 
   const input = {
