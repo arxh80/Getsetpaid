@@ -5,7 +5,10 @@
 name: getsetpaid
 
 services:
-  app:
+  # Not `app`: Tesselo's Caddy reaches its own container as `app` and also sits
+  # on `edge`, where a service name is a DNS alias. A shared name sent
+  # tesselo.co.uk to this container.
+  getsetpaid:
     image: getsetpaid:${GETSETPAID_TAG:?set by receive.sh}
     container_name: getsetpaid-app
     restart: unless-stopped
