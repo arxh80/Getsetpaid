@@ -3,8 +3,9 @@
 GetSetPaid runs on the IONOS VPS it shares with Tesselo (`ssh tesselo`, Ubuntu, 2 vCPU, 1.8 GB). The database, auth and storage are the hosted Supabase project in eu-west-1. Only the Next.js server runs on the VPS.
 
 ```
-visitor → Cloudflare (Access gate until launch, WAF, Turnstile)
-        → VPS :443, Tesselo's Caddy (mTLS: Cloudflare's origin-pull cert only)
+visitor → Cloudflare (WAF, Turnstile)
+        → VPS :443, Tesselo's Caddy (mTLS: Cloudflare's origin-pull cert only;
+          password gate until launch)
         → getsetpaid-app:3000 on the `edge` Docker network
         → Supabase (eu-west-1)
 ```
@@ -19,7 +20,7 @@ visitor → Cloudflare (Access gate until launch, WAF, Turnstile)
 | Public build values | GitHub repo variables `NEXT_PUBLIC_*`, `DEPLOY_HOST` | § 4 |
 | Deploy key | GitHub secret `DEPLOY_SSH_KEY`; the public half in `~deploy/.ssh/authorized_keys` forced to `receive.sh` | § 3 |
 | Host key pin | GitHub secret `DEPLOY_KNOWN_HOSTS` | § 3 |
-| Origin cert and key, origin-pull CA | `~/getsetpaid/tls/`, mounted read-only into Caddy | § 2 |
+| Origin cert and key, origin-pull CA, `gate.caddy` | `~/getsetpaid/tls/`, mounted read-only into Caddy | § 2 |
 | Caddy site | `deploy/getsetpaid.caddy` → `~/Tesselo/sites/getsetpaid.caddy`, imported by Tesselo's Caddyfile | § 3 |
 
 ## 2. Cloudflare (zone `getsetpaid.com`)
@@ -27,11 +28,11 @@ visitor → Cloudflare (Access gate until launch, WAF, Turnstile)
 1. **DNS:** `A getsetpaid.com` and `A www` → the VPS IP, **Proxied**. Brevo's records stay DNS-only (`docs/email-setup.md`).
 2. **SSL/TLS:** mode **Full (strict)**, minimum TLS 1.2, Always Use HTTPS on. Create an **Origin CA certificate** for `getsetpaid.com, *.getsetpaid.com` and put it in `~/getsetpaid/tls/origin.pem` and `origin.key` (mode 600).
 3. **Authenticated Origin Pulls:** turn on zone-level origin pulls, and put Cloudflare's origin-pull CA in `~/getsetpaid/tls/cloudflare-origin-pull-ca.pem`. Caddy then refuses any TLS handshake that does not present Cloudflare's client certificate. This is the origin lock. A firewall limited to Cloudflare's ranges would cut off Tesselo, which is served direct.
-4. **Until launch, Cloudflare Access** guards the whole hostname: an allow policy for the founder's email (one-time PIN). Add a **bypass** application for exactly these machine paths, each of which authenticates itself:
+4. **Until launch, a password gate** on the Caddy site (`~/getsetpaid/tls/gate.caddy`, imported by `deploy/getsetpaid.caddy`): HTTP basic auth on every path except these machine paths, each of which authenticates itself:
    - `/api/stripe/webhook` (Stripe's signature)
    - `/api/exports/run`, `/api/erasure/run`, `/api/retention/run`, `/api/incident-alerts/deliver` (the runner secrets; called by `pg_net` from Supabase)
 
-   At launch, delete the allow-everything-else policy.
+   The password is in `~/.config/getsetpaid/site-gate-password` on the founder's machine; only its bcrypt hash is on the VPS. Cloudflare Access would do the same at the edge but needs Zero Trust enabled on the account (a plan and terms the founder accepts). At launch, replace `gate.caddy` with one comment line and reload Caddy.
 5. **Turnstile:** follow `docs/runbooks/cloudflare.md` § 1, and its §§ 3-8 for the WAF, rate limits and the settings to keep off.
 
 ## 3. One-time VPS setup
@@ -71,10 +72,10 @@ visitor → Cloudflare (Access gate until launch, WAF, Turnstile)
 - **Roll back by hand:** `ssh -i <deploy key> deploy@<host> rollback`.
 - **Logs:** `ssh tesselo 'docker logs --tail 200 getsetpaid-app'`.
 
-## 6. Locked down: check before taking the Access gate off
+## 6. Locked down: check before taking the gate off
 
 - [ ] `curl -sk --resolve getsetpaid.com:443:<VPS IP> https://getsetpaid.com/login` fails the handshake (origin lock).
-- [ ] Without the Access cookie, `https://getsetpaid.com/login` shows Cloudflare's sign-in, not the app.
+- [ ] Without the password, `https://getsetpaid.com/login` answers 401, and `/api/stripe/webhook` still reaches the app.
 - [ ] `docker inspect getsetpaid-app` shows a read-only root filesystem, `CapDrop: [ALL]`, user 1001, and no host port.
 - [ ] `stat -c %a ~/getsetpaid/.env.production ~/getsetpaid/tls/*.key` prints `600`.
 - [ ] Every item in `SECURITY.md` § 15 and `docs/launch-gates.md` is done or signed off.

@@ -5,7 +5,8 @@
 # Cloudflare's Authenticated Origin Pulls client certificate, so a request
 # straight to the VPS IP with `Host: getsetpaid.com` fails before HTTP. This
 # replaces a Cloudflare-only firewall, which would cut off Tesselo (it is
-# served direct, not proxied). The three files live in ~/getsetpaid/tls on the
+# served direct, not proxied). The four files (cert, key, origin-pull CA,
+# gate.caddy) live in ~/getsetpaid/tls on the
 # VPS, mounted read-only into Caddy at /etc/caddy/getsetpaid-tls.
 getsetpaid.com, www.getsetpaid.com {
 	tls /etc/caddy/getsetpaid-tls/origin.pem /etc/caddy/getsetpaid-tls/origin.key {
@@ -14,6 +15,11 @@ getsetpaid.com, www.getsetpaid.com {
 			trust_pool file /etc/caddy/getsetpaid-tls/cloudflare-origin-pull-ca.pem
 		}
 	}
+
+	# Pre-launch gate (password; the machine paths bypass it). The file lives
+	# beside the certificate on the VPS, so its hash is never in git. At launch
+	# it becomes one comment line (docs/runbooks/deploy.md § 6).
+	import /etc/caddy/getsetpaid-tls/gate.caddy
 
 	@www host www.getsetpaid.com
 	redir @www https://getsetpaid.com{uri} permanent
