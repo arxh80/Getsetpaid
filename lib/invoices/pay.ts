@@ -48,9 +48,19 @@ export function checkoutIdempotencyKey(
 ): string {
   const parts = [
     input.account, input.invoiceId, input.number, input.grossMinor, input.feeMinor,
-    input.successUrl, input.cancelUrl, previousStripeSessionId, Math.floor(nowMs / 60_000),
+    input.successUrl, input.cancelUrl, input.expiresAt, previousStripeSessionId, Math.floor(nowMs / 60_000),
   ];
   return `checkout-${createHash("sha256").update(JSON.stringify(parts)).digest("hex")}`;
+}
+
+/**
+ * A session stays payable for an hour, not Stripe's default 24, so a link
+ * opened before the invoice is voided or the account is disconnected stops
+ * taking money soon after. Taken from the key's own minute: a retry inside
+ * that minute must send the same body, or Stripe rejects the reused key.
+ */
+export function checkoutExpiresAt(nowMs: number): number {
+  return Math.floor(nowMs / 60_000) * 60 + 60 * 60;
 }
 
 export async function loadPayView(token: string): Promise<PayView> {
@@ -104,6 +114,7 @@ export async function startCardPayment(token: string, origin: string): Promise<S
     else if (previous.status === "open" && previous.url) return { kind: "redirect", url: previous.url };
   }
 
+  const nowMs = Date.now();
   const input = {
     account: row.account,
     invoiceId,
@@ -112,12 +123,13 @@ export async function startCardPayment(token: string, origin: string): Promise<S
     feeMinor: Number(row.fee_minor),
     successUrl: `${origin}/pay/${token}/thanks`,
     cancelUrl: `${origin}/pay/${token}`,
+    expiresAt: checkoutExpiresAt(nowMs),
   };
   let session: { id: string; url: string };
   try {
     session = await gateway.createCheckoutSession({
       ...input,
-      idempotencyKey: checkoutIdempotencyKey(input, row.previous_stripe_session_id ?? null),
+      idempotencyKey: checkoutIdempotencyKey(input, row.previous_stripe_session_id ?? null, nowMs),
     });
   } catch (e) {
     console.error("[pay] Stripe refused to create a Checkout Session:", e instanceof Error ? e.message : "unknown");
