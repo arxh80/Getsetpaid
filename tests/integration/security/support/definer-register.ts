@@ -17,6 +17,7 @@ export const PRIVATE_POLICY_HELPERS: Readonly<Record<string, string>> = {
   "private.has_platform_permission(text)": "superuser allowlist + aal2 test behind every platform policy",
   "private.membership_update_is_permitted(uuid, uuid, uuid, text, timestamp with time zone)": "WITH CHECK guard of the membership UPDATE policy; compares against the stored row",
   "private.permitted_organisations(text)": "set form of has_permission() used by tenant policies",
+  "private.caller_has_verified_factor()": "export_jobs_select_own: an account export at aal1 only for a caller with no MFA factor; definer because authenticated cannot read auth.mfa_factors",
   "private.full_scope_organisations()": "record-scope policies (Q3): organisations where the caller sees every row",
   "private.entity_is_visible(text, uuid, uuid)": "polymorphic read dispatch for notes/tasks/documents policies",
   "private.entity_is_manageable(text, uuid, uuid)": "polymorphic write dispatch for notes/tasks/documents policies",
