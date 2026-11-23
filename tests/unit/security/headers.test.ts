@@ -26,6 +26,7 @@ function deploy(siteUrl: string) {
   vi.stubEnv("NODE_ENV", "production");
   vi.stubEnv("NEXT_PUBLIC_SITE_URL", siteUrl);
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://abc.supabase.co");
+  vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "");
 }
 
 afterEach(() => vi.unstubAllEnvs());
@@ -98,6 +99,31 @@ describe("form-action and the Stripe redirects", () => {
     deploy("https://app.getsetpaid.example");
     const form = directives(contentSecurityPolicy("n")).get("form-action")!.join(" ");
     expect(form).not.toMatch(/stripe\.test|\*/);
+  });
+});
+
+// Turnstile (components/auth/turnstile.tsx): Cloudflare documents script-src
+// and frame-src, and nothing else is widened.
+describe("the Turnstile origins", () => {
+  const TURNSTILE = "https://challenges.cloudflare.com";
+
+  it("are absent while no site key is set: frame-src stays 'none'", () => {
+    deploy("https://app.getsetpaid.example");
+    const csp = contentSecurityPolicy("n");
+    expect(csp).not.toContain(TURNSTILE);
+    expect(directives(csp).get("frame-src")).toEqual(["'none'"]);
+  });
+
+  it("with a site key, name exactly that origin in script-src and frame-src and nowhere else", () => {
+    deploy("https://app.getsetpaid.example");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "1x00000000000000000000AA");
+    const csp = directives(contentSecurityPolicy("n"));
+    expect(csp.get("script-src")).toEqual(["'self'", "'nonce-n'", "'strict-dynamic'", TURNSTILE]);
+    expect(csp.get("frame-src")).toEqual([TURNSTILE]);
+    const elsewhere = [...csp.entries()].filter(([name, values]) =>
+      !["script-src", "frame-src"].includes(name) && values.some((v) => v.includes("cloudflare")),
+    );
+    expect(elsewhere).toEqual([]);
   });
 });
 

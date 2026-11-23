@@ -6,6 +6,7 @@ import { EMPTY_FORM_STATE } from "@/lib/forms";
 import { Field } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
+import { Turnstile } from "./turnstile";
 
 export function MagicLinkForm({ next }: { next: string }) {
   const [state, formAction, pending] = useActionState(
@@ -28,6 +29,8 @@ export function MagicLinkForm({ next }: { next: string }) {
         required
         error={state.fieldErrors?.email}
       />
+
+      <Turnstile resetKey={state} />
 
       <Button type="submit" pending={pending} pendingLabel="Sending…">
         Email me a link

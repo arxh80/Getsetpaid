@@ -140,4 +140,24 @@ export const SUB_PROCESSORS: readonly SubProcessor[] = [
         "Payer email address, invoice number and amount, sent to Stripe when the payment is started; the card details are typed into Stripe's page and never reach us. We hold only the Stripe account ID of a linked workspace and, per payment, the payment-intent ID, the amount and the refunded amount",
     },
   },
+  {
+    // Turnstile on the auth forms, and the proxy/WAF once the host exists.
+    // Nothing reaches it until the site key is set on the host. US-
+    // incorporated and edge-processed, so the transfer basis is counsel's.
+    name: "Cloudflare, Inc.",
+    purpose:
+      "Protects sign-up, sign-in and emailed sign-in links from automated abuse with a security check, and, once the service launches, sits in front of it to deliver pages securely and block attacks.",
+    personalData:
+      "For the security check: your IP address and technical details of your browser, never what you type into the form. In front of the service: every request and response as it passes through, including your IP address and session cookies.",
+    location: "Incorporated in the United States; global edge network",
+    transferBasis:
+      "Not yet confirmed: this provider is incorporated in the United States and processes requests at the location nearest you. The safeguard for that transfer is for counsel to confirm.",
+    dpaSigned: false,
+    register: {
+      purpose:
+        "Bot and abuse protection: the Turnstile check on sign-up, password sign-in, magic link and the step-up password check (`components/auth/turnstile.tsx`), verified by Supabase Auth. **At launch:** the DNS, TLS, CDN and WAF proxy in front of the application host, carrying all traffic (`docs/runbooks/cloudflare.md`). **Built, not live:** nothing reaches Cloudflare until `NEXT_PUBLIC_TURNSTILE_SITE_KEY` is set on the host, and the proxy waits for the host",
+      personalData:
+        "Turnstile: the visitor's IP address, browser signals (TLS fingerprint, user agent) and the page's origin; never the form's contents. The proxy: every request and response in transit, including session cookies, IP addresses, page content and uploads",
+    },
+  },
 ];

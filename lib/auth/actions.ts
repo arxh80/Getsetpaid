@@ -24,6 +24,7 @@ import { safeNextPath } from "./redirects";
 import { mayChangePassword, readAuthFreshness } from "./step-up";
 import { bindSignUp, clearMustChoosePassword, isNewSignUp } from "./first-proof";
 import { mayTryPassword, recordPasswordOutcome } from "./login-budget";
+import { CAPTCHA_FAILED, captchaToken, isCaptchaFailure } from "./captcha";
 import { MUST_CHOOSE_PASSWORD_KEY } from "@/lib/supabase/middleware";
 import {
   field,
@@ -75,10 +76,12 @@ export async function signUpAction(
       // never anything an authorisation decision reads.
       data: fullName ? { full_name: fullName } : undefined,
       emailRedirectTo: callbackUrl(next),
+      captchaToken: captchaToken(formData),
     },
   });
 
   if (error) {
+    if (isCaptchaFailure(error)) return { error: CAPTCHA_FAILED };
     // Supabase distinguishes "already registered" from other failures. We do
     // not pass that distinction on -- see the enumeration note above. A user
     // who really does have an account gets the same "check your email" screen.
@@ -144,9 +147,14 @@ export async function signInAction(
   if (!(await mayTryPassword(email))) return { error: BAD_SIGN_IN };
 
   const supabase = await createClient();
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { error } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+    options: { captchaToken: captchaToken(formData) },
+  });
   await recordPasswordOutcome(email, error);
 
+  if (isCaptchaFailure(error)) return { error: CAPTCHA_FAILED };
   if (error) {
     // ONE message for wrong-password and no-such-account alike. Do not
     // "improve" this by reading error.code and being more specific.
@@ -179,8 +187,13 @@ export async function magicLinkAction(
       // bypassing the signup form entirely.
       shouldCreateUser: false,
       emailRedirectTo: callbackUrl(next),
+      captchaToken: captchaToken(formData),
     },
   });
+
+  // Checked before the address is looked up, so it is safe to show; without
+  // this a refused check would land on the "sent" page and nothing would come.
+  if (isCaptchaFailure(error)) return { error: CAPTCHA_FAILED };
 
   // Deliberately not surfacing `error` as a distinguishable outcome. The
   // dominant error here is "Signups not allowed for otp" -- i.e. no account

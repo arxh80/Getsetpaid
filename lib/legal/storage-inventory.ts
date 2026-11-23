@@ -96,6 +96,20 @@ export const BROWSER_STORAGE: readonly StorageItem[] = [
     necessity: "Remembers a display choice you made yourself.",
     matches: /^gsp:sidebar-pinned$/,
   },
+  {
+    // components/auth/turnstile.tsx, and Cloudflare's edge once the proxy is
+    // on (docs/runbooks/cloudflare.md). Turnstile keeps its signals in its own
+    // challenges.cloudflare.com frame; these two names are what Cloudflare may
+    // set on our domain when it challenges a request.
+    name: "cf_clearance, __cf_bm (Cloudflare security check)",
+    kind: "cookie",
+    setBy: "GetSetPaid, through its security provider (Cloudflare)",
+    purpose:
+      "Shows that this browser passed the security check on the sign-in, sign-up and email-link forms, or a check Cloudflare made in front of the service, so automated sign-in and sign-up abuse can be blocked.",
+    duration: "About 30 minutes.",
+    necessity: "A security control on signing in and creating accounts; Cloudflare does not use it to track you across sites.",
+    matches: /^(cf_clearance|__cf_bm)$/,
+  },
 ];
 
 export const STORAGE_KIND_LABELS: Record<StorageKind, string> = {
