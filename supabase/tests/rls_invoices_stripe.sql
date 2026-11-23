@@ -415,6 +415,7 @@ set request.jwt.claims = :'fin_a_c';
 select ist.val('SL15 POSITIVE CONTROL: that state, untouched by the refusal, completes for fin_a -- a RE-LINK over the live account', format($$select 'ok' from (select public.complete_stripe_link(%L, %L, false)) s$$, :'st2', :'acct_l2'), 'ok');
 reset role;
 select ist.val('SL15a ...the RE-LINK cleared the old account''s newest-applied event time', format($$select (charges_enabled_event_at is null)::text from public.invoice_stripe_accounts where organisation_id = %L$$, :'org_a'), 'true');
+reset request.jwt.claims;
 set role service_role;
 select ist.val('SL15b ...so the NEW account''s first event, created long before 2099, is applied (true), not ignored as older', format($$select public.stripe_account_updated('evt_sl15b', %L, false, '2026-11-18 09:00+00')::text$$, :'acct_l2'), 'true');
 reset role;
