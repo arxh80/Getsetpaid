@@ -1,0 +1,17 @@
+.git
+.github
+.claude
+.superpowers
+.next
+node_modules
+**/node_modules
+.env
+.env.*
+!.env.example
+supabase/.temp
+supabase/.branches
+test-results
+playwright-report
+graphify-out
+coverage
+*.log

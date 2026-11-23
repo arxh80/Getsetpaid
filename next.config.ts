@@ -3,6 +3,8 @@ import { payPageHeaders, staticSecurityHeaders } from "./lib/security/headers";
 import { SERVER_ACTION_BODY_SIZE_LIMIT } from "./lib/security/upload-limits";
 
 const nextConfig: NextConfig = {
+  // A self-contained server for the production image (Dockerfile).
+  output: "standalone",
   async headers() {
     return [
       {

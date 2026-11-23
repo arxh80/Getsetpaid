@@ -1,0 +1,44 @@
+# GetSetPaid's site on Tesselo's Caddy, imported from Tesselo's Caddyfile.
+#
+# Only Cloudflare can reach it. The certificate is a Cloudflare Origin CA one
+# (Cloudflare serves the public certificate), and the TLS handshake REQUIRES
+# Cloudflare's Authenticated Origin Pulls client certificate, so a request
+# straight to the VPS IP with `Host: getsetpaid.com` fails before HTTP. This
+# replaces a Cloudflare-only firewall, which would cut off Tesselo (it is
+# served direct, not proxied). The three files live in ~/getsetpaid/tls on the
+# VPS, mounted read-only into Caddy at /etc/caddy/getsetpaid-tls.
+getsetpaid.com, www.getsetpaid.com {
+	tls /etc/caddy/getsetpaid-tls/origin.pem /etc/caddy/getsetpaid-tls/origin.key {
+		client_auth {
+			mode require_and_verify
+			trust_pool file /etc/caddy/getsetpaid-tls/cloudflare-origin-pull-ca.pem
+		}
+	}
+
+	@www host www.getsetpaid.com
+	redir @www https://getsetpaid.com{uri} permanent
+
+	# Overwrite, never append: Cloudflare's own header names the visitor.
+	reverse_proxy getsetpaid-app:3000 {
+		header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+		header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+	}
+
+	request_body {
+		# The app's own ceiling is 25 MiB per upload plus form overhead.
+		max_size 30MB
+	}
+	encode zstd gzip
+	header {
+		# The app sends its own CSP, frame and referrer headers; Caddy adds
+		# HSTS and drops the server banner.
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		-Server
+	}
+	log {
+		output file /data/getsetpaid-access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}

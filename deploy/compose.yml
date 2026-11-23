@@ -1,0 +1,40 @@
+# GetSetPaid on the shared VPS, beside Tesselo. Run only by deploy/receive.sh
+# (docs/runbooks/deploy.md). Tesselo's Caddy is the one edge: it joins the
+# external `edge` network and reaches this container as getsetpaid-app:3000.
+# Nothing here publishes a host port.
+name: getsetpaid
+
+services:
+  app:
+    image: getsetpaid:${GETSETPAID_TAG:?set by receive.sh}
+    container_name: getsetpaid-app
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      NODE_ENV: production
+      MALWARE_SCANNER: structural
+    networks: [edge]
+    # Locked down: no root, no new privileges, no Linux capabilities, and a
+    # read-only root filesystem (Next writes only its cache, on a tmpfs).
+    user: "1001:1001"
+    read_only: true
+    tmpfs:
+      - /app/.next/cache:size=64m,uid=1001,gid=1001
+      - /tmp:size=64m,uid=1001,gid=1001
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 640m
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/login"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+networks:
+  edge:
+    external: true
