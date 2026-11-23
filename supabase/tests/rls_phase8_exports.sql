@@ -497,8 +497,21 @@ select xp.val('XR3 a Standard User reads their own account job and nothing else'
   $$select count(*)::text from public.export_jobs$$, '1');
 
 set request.jwt.claims = :'pstd1_c1';
-select xp.val('XR3a ...and still reads their own ACCOUNT job at aal1: the statutory copy needs no MFA',
+select xp.val('XR3a ...and, with NO factor enrolled, still reads their own ACCOUNT job at aal1: they cannot reach aal2 and the statutory copy is theirs',
   $$select count(*)::text from public.export_jobs$$, '1');
+reset role;
+insert into auth.mfa_factors (id, user_id, factor_type, status, created_at, updated_at)
+values (gen_random_uuid(), :'pstd1', 'totp', 'verified', now() - interval '1 day', now()) returning id as pstd1_factor \gset
+set role authenticated;
+set request.jwt.claims = :'pstd1_c1';
+select xp.val('XR3b ...but once they HAVE a verified factor, the same account job at aal1 reads ZERO (the stolen-password case)',
+  $$select count(*)::text from public.export_jobs$$, '0');
+set request.jwt.claims = :'pstd1_c';
+select xp.val('XR3c CONTROL: with that factor, at aal2, they read it',
+  $$select count(*)::text from public.export_jobs$$, '1');
+reset role;
+delete from auth.mfa_factors where id = :'pstd1_factor';
+set role authenticated;
 
 set request.jwt.claims = :'super_c';
 select xp.val('XR4 even the aal2 platform superuser reads nobody''s export jobs -- there is no oversight policy',
@@ -862,9 +875,25 @@ select xp.try_hint('XD4 ...and their own job has no archive yet, which is its ow
   format($$select public.audit_export_download(%L)$$, :'std_job'),
   'denied(22023:export_has_no_archive)');
 set request.jwt.claims = :'pstd1_c1';
-select xp.try_hint('XD4a ...and at aal1 the ACCOUNT job still passes the ownership and assurance gate',
+select xp.try_hint('XD4a ...and at aal1, with NO factor enrolled, the ACCOUNT job still passes the ownership and assurance gate',
   format($$select public.audit_export_download(%L)$$, :'std_job'),
   'denied(22023:export_has_no_archive)');
+reset role;
+insert into auth.mfa_factors (id, user_id, factor_type, status, created_at, updated_at)
+values (gen_random_uuid(), :'pstd1', 'totp', 'verified', now() - interval '1 day', now()) returning id as pstd1_factor_d \gset
+set role authenticated;
+set request.jwt.claims = :'pstd1_c1';
+select xp.try_hint('XD4b ...but with a verified factor, at aal1 the ACCOUNT job gets a stranger''s answer',
+  format($$select public.audit_export_download(%L)$$, :'std_job'),
+  'denied(42501:not_your_export)');
+set request.jwt.claims = :'pstd1_c';
+select xp.try_hint('XD4c CONTROL: with that factor, at aal2, it passes the gate again',
+  format($$select public.audit_export_download(%L)$$, :'std_job'),
+  'denied(22023:export_has_no_archive)');
+reset role;
+delete from auth.mfa_factors where id = :'pstd1_factor_d';
+set role authenticated;
+set request.jwt.claims = :'pstd1_c1';
 
 set request.jwt.claims = :'super_c';
 select xp.try_hint('XD5 the aal2 platform superuser cannot download somebody''s export either',
