@@ -70,7 +70,8 @@ export function oneLine(value: string, max: number): string {
   // template's to avoid (task-reminder-template.ts quotes the title), because
   // no field-level pass can see punctuation a template adds afterwards.
   const tidy = (text: string) => neutraliseLinks(text).replace(/\s{2,}/g, " ").trim();
-  const flat = tidy(value.replace(/[\r\n\t]+/g, " "));
+  // Every break JS's \s knows (VT, FF, U+2028/9 too) plus NEL, which \s omits.
+  const flat = tidy(value.replace(/[\s\u0085]+/g, " "));
   return flat.length > max ? tidy(`${flat.slice(0, max - 1)}…`) : flat;
 }
 
