@@ -1,0 +1,51 @@
+# Build the production image and ship it to the VPS. Manual only until launch:
+# run it from the Actions tab ("Run workflow") on main. docs/runbooks/deploy.md.
+#
+# The image is built HERE, never on the VPS (1.8 GB beside Tesselo cannot hold
+# a Next build), and streamed over SSH with `docker save`, so no registry ever
+# holds it. The deploy key is forced to deploy/receive.sh on the server, and
+# the host key is pinned from a secret, so a swapped server is refused.
+name: deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Build the image
+        env:
+          NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+        run: |
+          docker build \
+            --build-arg NEXT_PUBLIC_SITE_URL --build-arg NEXT_PUBLIC_SUPABASE_URL \
+            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY --build-arg NEXT_PUBLIC_TURNSTILE_SITE_KEY \
+            -t "getsetpaid:${GITHUB_SHA}" .
+
+      - name: Ship it to the VPS
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          docker save "getsetpaid:${GITHUB_SHA}" | gzip -1 | \
+            ssh -i ~/.ssh/deploy -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
+              "deploy@${DEPLOY_HOST}" "deploy ${GITHUB_SHA}"
