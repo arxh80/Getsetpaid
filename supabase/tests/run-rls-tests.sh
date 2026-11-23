@@ -294,7 +294,7 @@ for u in alice bob carol dave super; do
 done
 dump_vars FOUNDATION_VARS "${VARS[@]}"
 
-run_suite "RLS FOUNDATION" rls_foundation.sql harness 200 "${VARS[@]}"
+run_suite "RLS FOUNDATION" rls_foundation.sql harness 205 "${VARS[@]}"
 fails=$SUITE_FAILS
 if [ "$fails" != "0" ]; then
   echo "RLS SUITE FAILED: $fails failing assertion(s)" >&2
