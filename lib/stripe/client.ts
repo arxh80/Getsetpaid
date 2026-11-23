@@ -22,7 +22,8 @@ export interface StripeGateway {
   chargesEnabled(account: string): Promise<boolean>;
   deauthorize(account: string): Promise<void>;
   createCheckoutSession(input: CheckoutInput): Promise<{ id: string; url: string }>;
-  checkoutSession(account: string, id: string): Promise<CheckoutSessionState>;
+  /** null when Stripe has no such session on that account; any other failure throws. */
+  checkoutSession(account: string, id: string): Promise<CheckoutSessionState | null>;
   constructEvent(rawBody: string, signature: string): StripeEvent;   // throws on a bad signature
 }
 
@@ -63,8 +64,14 @@ class LiveStripeGateway implements StripeGateway {
     if (!session.url) throw new Error("stripe checkout: no url");
     return { id: session.id, url: session.url };
   }
-  async checkoutSession(account: string, id: string): Promise<CheckoutSessionState> {
-    const session = await this.stripe.checkout.sessions.retrieve(id, {}, { stripeAccount: account });
+  async checkoutSession(account: string, id: string): Promise<CheckoutSessionState | null> {
+    let session: Stripe.Checkout.Session;
+    try {
+      session = await this.stripe.checkout.sessions.retrieve(id, {}, { stripeAccount: account });
+    } catch (e) {
+      if (e instanceof Stripe.errors.StripeError && e.code === "resource_missing") return null;
+      throw e;
+    }
     const status = session.status === "open" ? "open" : session.status === "complete" ? "complete" : "expired";
     return { status, url: session.url };
   }

@@ -172,9 +172,18 @@ describe("startCardPayment", () => {
     create.mockRestore();
   });
 
-  it("CONTROL: an earlier session that is expired, or that Stripe cannot read, gets a new one", async () => {
+  it("an earlier session that cannot be read (an outage) is a try-again: no second session beside one that may be open", async () => {
     const create = vi.spyOn(FakeStripeGateway.prototype, "createCheckoutSession");
-    const read = vi.spyOn(FakeStripeGateway.prototype, "checkoutSession").mockRejectedValue(new Error("No such checkout.session"));
+    const read = vi.spyOn(FakeStripeGateway.prototype, "checkoutSession").mockRejectedValue(new Error("stripe 503"));
+    expect(await startCardPayment(tok(issued), ORIGIN)).toEqual({ kind: "unavailable" });
+    expect(create).not.toHaveBeenCalled();
+    read.mockRestore();
+    create.mockRestore();
+  });
+
+  it("CONTROL: an earlier session that is expired, or that Stripe does not have, gets a new one", async () => {
+    const create = vi.spyOn(FakeStripeGateway.prototype, "createCheckoutSession");
+    const read = vi.spyOn(FakeStripeGateway.prototype, "checkoutSession").mockResolvedValue(null);
     expect((await startCardPayment(tok(issued), ORIGIN)).kind).toBe("redirect");
     read.mockResolvedValue({ status: "expired", url: null });
     expect((await startCardPayment(tok(issued), ORIGIN)).kind).toBe("redirect");
